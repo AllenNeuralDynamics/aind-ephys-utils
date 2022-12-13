@@ -1,0 +1,39 @@
+name: Tag and publish
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Extract version from file
+        id: getversion
+        run: |
+          pkg_name=$(grep -P 'version = \{attr = .*\}' pyproject.toml | grep -oP '\w+.__version__')
+          init_file="./src/${pkg_name//.__version__}/__init__.py"
+          new_tag=$(grep -Po '__version__ = "\K.*?(?=")' $init_file)
+          echo "::set-output name=version::$new_tag"
+      - name: Bump tag
+        uses: mathieudutour/github-tag-action@v6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          custom_tag: ${{ steps.getversion.outputs.version }}
+#  publish:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Set up Python 3.8
+#        uses: actions/setup-python@v2
+#        with:
+#          python-version: 3.8
+#      - name: Install dependencies
+#        run: |
+#          pip install --upgrade setuptools wheel twine build
+#          python -m build
+#          twine check dist/*
+#      - name: Publish on PyPI
+#        uses: pypa/gh-action-pypi-publish@release/v1
+#        with:
+#          password: ${{ secrets.AIND_PYPI_TOKEN }}
