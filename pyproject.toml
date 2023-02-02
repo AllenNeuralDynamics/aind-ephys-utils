@@ -17,7 +17,8 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
-    'pandas'
+    'pandas',
+    'xarray'
 ]
 
 [project.optional-dependencies]
