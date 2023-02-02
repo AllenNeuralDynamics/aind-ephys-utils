@@ -7,7 +7,7 @@ import pandas as pd
 import xarray as xr
 
 
-def align(
+def align(  # noqa: C901
     times,
     events,
     interval,
