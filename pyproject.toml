@@ -17,7 +17,6 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
-    'pandas',
     'xarray'
 ]
 
@@ -54,6 +53,12 @@ exclude = '''
     | _build
     | build
     | dist
+    | code
+    | environment
+    | data
+    | metadata
+    | results
+    | scratch
   )/
   | .gitignore
 )
@@ -70,7 +75,16 @@ fail_under = 100
 [tool.isort]
 line_length = 79
 profile = "black"
+src_paths = ["src", "tests"]
 
 [tool.interrogate]
-exclude = ["setup.py", "docs", "build"]
+exclude = ["setup.py", 
+           "docs", 
+           "build", 
+           "code", 
+           "environment",
+           "metadata",
+           "results",
+           "data",
+           "scratch"]
 fail-under = 100
