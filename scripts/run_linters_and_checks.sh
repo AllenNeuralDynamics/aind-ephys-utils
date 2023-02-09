@@ -5,7 +5,6 @@
 # to run linters and checks.
 main() {
   # As a default, run linters only. Add option to run checks
-  # checks = false;
   case $1 in
       -c|--checks) checks=true;
   esac
