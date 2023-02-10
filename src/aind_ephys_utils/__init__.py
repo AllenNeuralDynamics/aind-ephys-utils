@@ -1,3 +1,3 @@
 """Helpful methods for exploring in vivo electrophysiology data.
 """
-__version__ = "0.0.7"
+__version__ = "0.0.8"
