@@ -69,7 +69,7 @@ class AlignSpikesTest(unittest.TestCase):
         self.assertEqual(np.sum(da.data), len(self.events))
 
         with self.assertRaises(Exception) as context:
-            da = to_events(
+            to_events(
                 self.times,
                 self.events,
                 (-0.1, 0.1),
@@ -78,10 +78,10 @@ class AlignSpikesTest(unittest.TestCase):
                 return_dataframe=True,
             )
 
-            self.assertTrue(
-                "events and event_labels must be the same length."
-                in str(context.exception)
-            )
+        self.assertTrue(
+            "events and event_labels must be the same length."
+            in str(context.exception)
+        )
 
     def test_align_to_events(self) -> None:
         """Test the `align_to_events` alias"""
