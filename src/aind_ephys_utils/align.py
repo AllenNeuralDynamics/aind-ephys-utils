@@ -7,7 +7,7 @@ import pandas as pd
 import xarray as xr
 
 
-def align(  # noqa: C901
+def to_events(  # noqa: C901
     times,
     events,
     interval,
@@ -16,7 +16,8 @@ def align(  # noqa: C901
     return_dataframe=False,
 ):
     """
-    Aligns times (sorted in ascending order) to a set of events
+    Aligns spikes times (sorted in ascending order) to
+    a set of event times
 
     If the optional `bin_size` argument is supplied, the spike
     times are binned.
@@ -137,8 +138,5 @@ def align(  # noqa: C901
                 )
 
 
-align_spikes = align
-""" Alias for `align` """
-
-align_times = align
-""" Another alias for `align` """
+align_to_events = to_events
+""" Alias for `to_events` """
