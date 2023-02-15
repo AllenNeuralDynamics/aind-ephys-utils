@@ -39,6 +39,7 @@ html_favicon = "_static/favicon.ico"
 html_theme_options = {
     "light_logo": "light-logo.svg",
     "dark_logo": "dark-logo.svg",
+    "sidebar_hide_name": True,
 }
 
 # If true, "Created using Sphinx" is shown in the HTML footer. Default is True.
