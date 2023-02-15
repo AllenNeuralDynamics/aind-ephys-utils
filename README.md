@@ -4,7 +4,7 @@
 ![Code Style](https://img.shields.io/badge/code%20style-black-black)
 [![semantic-release: angular](https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release)](https://github.com/semantic-release/semantic-release)
 
-Library for ephys utilities.
+Helpful methods for exploring *in vivo* electrophysiology data.
 
 ## Installation
 To use the software, in the root directory, run

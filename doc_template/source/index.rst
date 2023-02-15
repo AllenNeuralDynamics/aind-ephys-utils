@@ -4,19 +4,22 @@
    contain the root `toctree` directive.
 
 
-Welcome to this repository's documentation!
+:code:`aind-ephys-utils`
 ===========================================
 
+.. image:: https://img.shields.io/badge/license-MIT-brightgreen
+.. image:: https://img.shields.io/badge/code%20style-black-black
+.. image:: https://img.shields.io/badge/semantic--release-angular-e10079?logo=semantic-release
+
+Helpful methods for exploring *in vivo* electrophysiology data.
+
 .. toctree::
+   :hidden:
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Documentation:
 
    modules
 
 
-Indices and tables
-==================
-
 * :ref:`genindex`
 * :ref:`modindex`
-* :ref:`search`
