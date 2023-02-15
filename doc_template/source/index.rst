@@ -16,7 +16,7 @@ Helpful methods for exploring *in vivo* electrophysiology data.
 .. toctree::
    :hidden:
    :maxdepth: 2
-   :caption: Documentation:
+   :caption: Documentation
 
    modules
 
