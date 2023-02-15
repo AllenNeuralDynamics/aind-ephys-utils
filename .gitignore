@@ -70,8 +70,6 @@ instance/
 
 # Sphinx documentation
 doc_template/build
-doc_template/source/aind_ephys_utils.rst 
-doc_template/source/modules.rst
 
 # PyBuilder
 target/
