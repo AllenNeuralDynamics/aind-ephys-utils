@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from numpy.testing import assert_array_equal
 
-from aind_ephys_utils import align
+from aind_ephys_utils.align import align_to_events, to_events
 
 
 class AlignSpikesTest(unittest.TestCase):
@@ -18,19 +18,19 @@ class AlignSpikesTest(unittest.TestCase):
     def test_align(self) -> None:
         """Test the `align` method."""
 
-        ts, inds = align.align(self.times, self.events, (-0.1, 0.1))
+        ts, inds = to_events(self.times, self.events, (-0.1, 0.1))
 
         assert_array_equal(ts, np.zeros(self.times.shape))
         assert_array_equal(inds, np.arange(10, dtype="int"))
 
-        df = align.align(
+        df = to_events(
             self.times, self.events, (-0.1, 0.1), return_dataframe=True
         )
 
         assert_array_equal(df.time, np.zeros(self.times.shape))
         assert_array_equal(df.event_index, np.arange(10, dtype="int"))
 
-        df = align.align(
+        df = to_events(
             self.times,
             self.events,
             (-0.1, 0.1),
@@ -41,13 +41,13 @@ class AlignSpikesTest(unittest.TestCase):
         assert_array_equal(df.time, np.zeros(self.times.shape))
         assert_array_equal(df.event_index, np.arange(10, dtype="int"))
 
-        bins, counts = align.align(
+        bins, counts = to_events(
             self.times, self.events, (-0.1, 0.1), bin_size=0.01
         )
 
         self.assertEqual(np.sum(counts), len(self.events))
 
-        da = align.align(
+        da = to_events(
             self.times,
             self.events,
             (-0.1, 0.1),
@@ -57,7 +57,7 @@ class AlignSpikesTest(unittest.TestCase):
 
         self.assertEqual(np.sum(da.data), len(self.events))
 
-        da = align.align(
+        da = to_events(
             self.times,
             self.events,
             (-0.1, 0.1),
@@ -69,7 +69,7 @@ class AlignSpikesTest(unittest.TestCase):
         self.assertEqual(np.sum(da.data), len(self.events))
 
         with self.assertRaises(Exception) as context:
-            da = align.align(
+            to_events(
                 self.times,
                 self.events,
                 (-0.1, 0.1),
@@ -83,18 +83,10 @@ class AlignSpikesTest(unittest.TestCase):
             in str(context.exception)
         )
 
-    def test_align_spikes(self) -> None:
-        """Test the `align_spikes` alias"""
+    def test_align_to_events(self) -> None:
+        """Test the `align_to_events` alias"""
 
-        ts, inds = align.align_spikes(self.times, self.events, (-0.1, 0.1))
-
-        assert_array_equal(ts, np.zeros(self.times.shape))
-        assert_array_equal(inds, np.arange(10, dtype="int"))
-
-    def test_align_times(self) -> None:
-        """Test the `align_times` alias"""
-
-        ts, inds = align.align_times(self.times, self.events, (-0.1, 0.1))
+        ts, inds = align_to_events(self.times, self.events, (-0.1, 0.1))
 
         assert_array_equal(ts, np.zeros(self.times.shape))
         assert_array_equal(inds, np.arange(10, dtype="int"))

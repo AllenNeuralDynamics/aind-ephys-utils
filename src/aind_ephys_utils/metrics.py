@@ -3,10 +3,10 @@
 
 import numpy as np
 
-from .align import align
+from . import align
 
 
-def latency(
+def spike_latency(
     times,
     events,
     interval,
@@ -60,7 +60,9 @@ def latency(
     if use_psth:
         win = np.array([0, 0.25, 0.5, 0.25, 0])  # 5-point Hann window
 
-        bins, counts = align(times, events, interval, bin_size=bin_size)
+        bins, counts = align.to_events(
+            times, events, interval, bin_size=bin_size
+        )
 
         psth = np.convolve(np.mean(counts, 1) / bin_size, win, mode="same")
 
@@ -75,14 +77,10 @@ def latency(
         return first_spike_latency * bin_size, psth
 
     else:
-        df = align(
-            times, events, interval=(0, interval[1]), return_dataframe=True
+        df = align.to_events(
+            times, events, (0, interval[1]), return_dataframe=True
         )
 
         latencies = np.squeeze(df.groupby("event_index").min().values)
 
         return np.median(latencies), latencies
-
-
-spike_latency = latency
-""" Alias for `latency` """
