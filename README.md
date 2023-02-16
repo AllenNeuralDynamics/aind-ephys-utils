@@ -7,13 +7,18 @@
 Helpful methods for exploring *in vivo* electrophysiology data.
 
 ## Installation
-To use the software, in the root directory, run
+
+### For users
+
 ```bash
-pip install -e .
+pip install aind-ephys-utils
 ```
 
-To develop the code, run
+### For developers
+
 ```bash
+git clone https://github.com/AllenNeuralDynamics/aind-ephys-utils
+cd aind-ephys-utils
 pip install -e .[dev]
 ```
 
