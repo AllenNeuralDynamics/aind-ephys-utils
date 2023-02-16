@@ -22,6 +22,8 @@ First, clone the repository. Then, from the `aind-ephys-utils` directory, run:
 pip install -e .[dev]
 ```
 
+**Note:** On recent versions of macOS, you'll need to put the last argument in quotation marks: `".[dev]"`
+
 ## Contributing
 
 ### Linters and testing
