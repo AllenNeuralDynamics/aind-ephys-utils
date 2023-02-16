@@ -7,15 +7,22 @@
 Helpful methods for exploring *in vivo* electrophysiology data.
 
 ## Installation
-To use the software, in the root directory, run
+
+### For users
+
 ```bash
-pip install -e .
+pip install aind-ephys-utils
 ```
 
-To develop the code, run
+### For developers
+
+First, clone the repository. Then, from the `aind-ephys-utils` directory, run:
+
 ```bash
 pip install -e .[dev]
 ```
+
+**Note:** On recent versions of macOS, you'll need to put the last argument in quotation marks: `".[dev]"`
 
 ## Contributing
 
