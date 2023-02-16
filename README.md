@@ -16,9 +16,9 @@ pip install aind-ephys-utils
 
 ### For developers
 
+First, clone the repository. Then, from the `aind-ephys-utils` directory, run:
+
 ```bash
-git clone https://github.com/AllenNeuralDynamics/aind-ephys-utils
-cd aind-ephys-utils
 pip install -e .[dev]
 ```
 
