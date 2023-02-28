@@ -60,7 +60,7 @@ def spike_latency(
     if use_psth:
         win = np.array([0, 0.25, 0.5, 0.25, 0])  # 5-point Hann window
 
-        bins, counts = align.to_events(
+        bins, counts, unit_ids = align.to_events(
             times, events, interval, bin_size=bin_size
         )
 
@@ -77,10 +77,8 @@ def spike_latency(
         return first_spike_latency * bin_size, psth
 
     else:
-        df = align.to_events(
-            times, events, (0, interval[1]), return_dataframe=True
-        )
+        df = align.to_events(times, events, (0, interval[1]), return_df=True)
 
-        latencies = np.squeeze(df.groupby("event_index").min().values)
+        latencies = np.squeeze(df.groupby("event_index").min()["time"].values)
 
         return np.median(latencies), latencies

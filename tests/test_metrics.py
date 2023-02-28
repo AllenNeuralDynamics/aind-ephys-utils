@@ -26,6 +26,8 @@ class SpikeLatencyTest(unittest.TestCase):
             self.times, self.events, (-0.1, 0.1), use_psth=False
         )
 
+        print(latencies)
+
         assert_allclose(first_spike, self.offset)
         assert_array_equal(latencies, self.times - self.events)
 
