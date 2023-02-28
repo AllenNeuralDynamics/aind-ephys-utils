@@ -21,7 +21,7 @@ class SortingTest(unittest.TestCase):
         events,
         interval=(-1, 1),
         event_labels=labels,
-        return_dataframe=True,
+        return_df=True,
     )
 
     def test_by_condition(self) -> None:
