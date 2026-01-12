@@ -6,6 +6,31 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
+## Usage
+
+This package is built around a single idea: 
+
+Convert common neuroscience data tables into well-structured `xarray.DataArrays`, then do everything else in Xarray.
+
+It supports:
+- aligning spikes to events
+- standard plots (rasters, PSTHs)
+- population analyses (e.g. PCA)
+
+### Core design principles
+
+All analysis happens on `xarray.DataArray` objects with labeled dimensions and coordinates, via the `ephys` accessor:
+- `da.ephys.align(...)`
+- `da.ephys.reduce(...)`
+- `da.ephys.raster(...)`
+- `da.ephys.psth(...)`
+
+This allows functions to be run in sequence and combined with built-in Xarray functions, e.g.:
+
+```
+da.ephys.align(...).sel(unit=1).mean('trial').ephys.smooth(...)
+```
+
 ## Installation
 
 ### For users

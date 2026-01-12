@@ -1,5 +1,4 @@
-""" Module to compute response latency to a set of events
-"""
+"""Module to compute response latency to a set of events"""
 
 import numpy as np
 

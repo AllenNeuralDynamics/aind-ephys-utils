@@ -1,4 +1,4 @@
-""" Module to align two sorted temporal sequences
+"""Module to align two sorted temporal sequences
 (usually spike times and events).
 """
 

@@ -1,0 +1,670 @@
+"""Pandas -> xarray ingestion for ephys analysis.
+
+This module implements `from_dataframe`, an adapter that converts one or two
+pandas DataFrames into canonical xarray objects.
+
+Supported patterns
+------------------
+1) `from_dataframe(units_df)`:
+   Build a ragged spikes DataArray with dims (unit, trial) where trial=[0] and
+   spike times are expressed in session time.
+
+2) `from_dataframe(trials_df)`:
+   If the DataFrame does not look like a units/spikes table, interpret it as a
+   trials/events table and build an events DataArray with dims (trial, event,
+   bound).
+
+3) `from_dataframe(units_df, trials_df)`:
+   Segment per-unit session spike times by trial boundaries and express spikes
+   in trial time relative to an anchor (by default, the trial start).
+
+The resulting DataArrays are validated by `aind_ephys_utils.core.validate` when
+`validate=True`.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from ..core.conventions import C
+from ..core.validate import validate as validate_xarray
+
+
+class FromDataFrameError(ValueError):
+    """Raised when `from_dataframe` cannot interpret or validate the inputs."""
+
+    pass
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def _get_ids(df: pd.DataFrame, id_col: Optional[str], kind: str) -> np.ndarray:
+    """
+    Default to index unless id_col is provided.
+    """
+    if id_col is None:
+        return df.index.to_numpy()
+    if id_col not in df.columns:
+        raise FromDataFrameError(
+            f"{kind}_id_col={id_col!r} not found in DataFrame columns."
+        )
+    return df[id_col].to_numpy()
+
+
+def _default_coords(df: pd.DataFrame, exclude: set[str]) -> list[str]:
+    """Return column names to attach as coordinates.
+
+    Parameters
+    ----------
+    df:
+        Source DataFrame.
+    exclude:
+        Column names to exclude (ids, spike times, event columns, etc.).
+
+    Returns
+    -------
+    list[str]
+        Remaining column names.
+    """
+    return [c for c in df.columns if c not in exclude]
+
+
+def _ensure_1d_float_array(x: Any, *, ctx: str) -> np.ndarray:
+    """Convert a spike-time entry into a 1D float array.
+
+    Parameters
+    ----------
+    x:
+        Array-like spike times in seconds, or None.
+    ctx:
+        Context string used to make error messages more actionable.
+
+    Returns
+    -------
+    np.ndarray
+        1D float array of spike times.
+    """
+    if x is None:
+        return np.asarray([], dtype=float)
+    arr = np.asarray(x, dtype=float)
+    if arr.ndim != 1:
+        raise FromDataFrameError(
+            f"{ctx}: expected 1D array, got shape {arr.shape}."
+        )
+    return arr
+
+
+def _infer_wide_event_cols(
+    trials_df: pd.DataFrame,
+) -> Tuple[Dict[str, str], Dict[str, Tuple[str, str]]]:
+    """
+    Infer:
+      - event_cols: {"go_cue": "go_cue_time"} from *_time columns
+      - epoch_cols: {"delay": ("delay_start","delay_end")} from *_start/_end pairs
+    """
+    cols = list(trials_df.columns)
+    event_cols: Dict[str, str] = {}
+    epoch_cols: Dict[str, Tuple[str, str]] = {}
+
+    starts = {c[:-6]: c for c in cols if c.endswith("_start")}
+    ends = {c[:-4]: c for c in cols if c.endswith("_end")}
+    for base, sc in starts.items():
+        if base in ends:
+            epoch_cols[base] = (sc, ends[base])
+
+    for c in cols:
+        if c.endswith("_time"):
+            name = c[:-5]
+            if name in epoch_cols:
+                continue
+            event_cols[name] = c
+
+    return event_cols, epoch_cols
+
+
+def _build_events(
+    trials_df: pd.DataFrame,
+    *,
+    trial_id_col: Optional[str],
+    event_cols: Optional[Dict[str, str]],
+    epoch_cols: Optional[Dict[str, Tuple[str, str]]],
+    long_event_col: Optional[str],
+    long_time_col: Optional[str],
+    long_end_time_col: Optional[str],
+    trial_coords: Optional[List[str]],
+    time_unit: str,
+    timebase: str,
+) -> xr.DataArray:
+    """
+    Canonical events/epochs representation:
+      events: DataArray dims (trial, event, bound)
+      bound ∈ {"start","end"} ; instantaneous events have start==end
+    """
+    trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+
+    use_long = long_event_col is not None and long_time_col is not None
+    if not use_long and event_cols is None and epoch_cols is None:
+        event_cols, epoch_cols = _infer_wide_event_cols(trials_df)
+
+    event_cols = event_cols or {}
+    epoch_cols = epoch_cols or {}
+
+    if use_long:
+        if (
+            long_event_col not in trials_df.columns
+            or long_time_col not in trials_df.columns
+        ):
+            raise FromDataFrameError(
+                f"Long-format events requires columns {long_event_col!r} and {long_time_col!r}."
+            )
+
+        # Preserve event label order
+        seen = set()
+        event_names: List[str] = []
+        for v in trials_df[long_event_col].astype(str).to_numpy():
+            if v not in seen:
+                event_names.append(v)
+                seen.add(v)
+
+        data = np.full(
+            (len(trials_df), len(event_names), 2), np.nan, dtype=float
+        )
+        ev_to_i = {ev: i for i, ev in enumerate(event_names)}
+
+        t_start = pd.to_numeric(
+            trials_df[long_time_col], errors="coerce"
+        ).to_numpy(dtype=float)
+        if long_end_time_col and long_end_time_col in trials_df.columns:
+            t_end = pd.to_numeric(
+                trials_df[long_end_time_col], errors="coerce"
+            ).to_numpy(dtype=float)
+        else:
+            t_end = t_start
+
+        for r in range(len(trials_df)):
+            ev = str(trials_df.iloc[r][long_event_col])
+            ei = ev_to_i[ev]
+            data[r, ei, 0] = t_start[r]
+            data[r, ei, 1] = t_end[r]
+
+    else:
+        if not event_cols and not epoch_cols:
+            raise FromDataFrameError(
+                "Could not infer any events/epochs. Provide event_cols/epoch_cols, "
+                "or include columns like *_time or *_start/_end."
+            )
+
+        event_names = list(event_cols.keys()) + list(epoch_cols.keys())
+        data = np.full(
+            (len(trials_df), len(event_names), 2), np.nan, dtype=float
+        )
+
+        # instantaneous events
+        for k, name in enumerate(event_cols.keys()):
+            col = event_cols[name]
+            ts = pd.to_numeric(trials_df[col], errors="coerce").to_numpy(
+                dtype=float
+            )
+            data[:, k, 0] = ts
+            data[:, k, 1] = ts
+
+        # epochs
+        off = len(event_cols)
+        for j, name in enumerate(epoch_cols.keys()):
+            sc, ec = epoch_cols[name]
+            ts = pd.to_numeric(trials_df[sc], errors="coerce").to_numpy(
+                dtype=float
+            )
+            te = pd.to_numeric(trials_df[ec], errors="coerce").to_numpy(
+                dtype=float
+            )
+            data[:, off + j, 0] = ts
+            data[:, off + j, 1] = te
+
+    events = xr.DataArray(
+        data,
+        dims=(C.trial, C.event, "bound"),
+        coords={
+            C.trial: trial_ids,
+            C.event: np.asarray(event_names, dtype=object),
+            "bound": np.asarray(["start", "end"], dtype=object),
+        },
+        name="events",
+    )
+
+    events.attrs[C.attr_time_unit] = time_unit
+    events.attrs[C.attr_timebase] = timebase
+    events.attrs[C.attr_kind] = "events"
+    events.attrs[C.attr_history] = ["from_dataframe(events)"]
+
+    # attach trial metadata as coords
+    if trial_coords is None:
+        exclude = set()
+        if trial_id_col is not None:
+            exclude.add(trial_id_col)
+        exclude |= set(event_cols.values())
+        for sc, ec in epoch_cols.values():
+            exclude.add(sc)
+            exclude.add(ec)
+        if long_event_col:
+            exclude.add(long_event_col)
+        if long_time_col:
+            exclude.add(long_time_col)
+        if long_end_time_col:
+            exclude.add(long_end_time_col)
+        trial_coords = _default_coords(trials_df, exclude)
+
+    for c in trial_coords:
+        events = events.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
+
+    return events
+
+
+def _make_time_centers(
+    bin_size: float, window: Tuple[float, float]
+) -> np.ndarray:
+    """Create bin centers for a fixed-width histogram.
+
+    Parameters
+    ----------
+    bin_size:
+        Bin width in seconds.
+    window:
+        (tmin, tmax) interval in seconds.
+
+    Returns
+    -------
+    np.ndarray
+        1D array of bin centers.
+    """
+    tmin, tmax = window
+    if tmin >= tmax:
+        raise FromDataFrameError(
+            f"Invalid window {window}: require tmin < tmax."
+        )
+    edges = np.arange(tmin, tmax + bin_size, bin_size)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    if centers.size == 0:
+        raise FromDataFrameError(
+            f"Window {window} with bin_size={bin_size} produced 0 bins."
+        )
+    return centers
+
+
+def _bin_edges_from_centers(centers: np.ndarray) -> Tuple[np.ndarray, float]:
+    """Compute histogram bin edges (and dt) from uniformly-spaced bin centers.
+
+    Parameters
+    ----------
+    centers:
+        1D array of uniformly spaced bin centers.
+
+    Returns
+    -------
+    (edges, dt):
+        edges is a 1D array of length len(centers)+1, dt is the bin width.
+    """
+    centers = np.asarray(centers, dtype=float)
+    if centers.ndim != 1 or centers.size < 2:
+        raise FromDataFrameError(
+            "time must be a 1D array with at least 2 points."
+        )
+    dt = float(centers[1] - centers[0])
+    if not np.allclose(np.diff(centers), dt):
+        raise FromDataFrameError(
+            "time vector must be uniformly spaced for binning."
+        )
+    edges = np.concatenate([centers - dt / 2, [centers[-1] + dt / 2]])
+    return edges, dt
+
+
+def _build_spikes_units_only(
+    units_df: pd.DataFrame,
+    *,
+    spike_times_col: str,
+    unit_id_col: Optional[str],
+    unit_coords: Optional[List[str]],
+    time_unit: str,
+) -> xr.DataArray:
+    """
+    Case 1: only units_df passed.
+    Return ragged (unit, trial) with trial=[0].
+    Spike times are *session time*.
+    """
+    if spike_times_col not in units_df.columns:
+        raise FromDataFrameError(
+            f"units_df must contain {spike_times_col!r} column."
+        )
+
+    unit_ids = _get_ids(units_df, unit_id_col, "unit")
+    n_units = len(units_df)
+
+    data = np.empty((n_units, 1), dtype=object)
+    for ui in range(n_units):
+        spk = _ensure_1d_float_array(
+            units_df.iloc[ui][spike_times_col], ctx=f"unit {ui} spike_times"
+        )
+        data[ui, 0] = spk
+
+    da = xr.DataArray(
+        data,
+        dims=(C.unit, C.trial),
+        coords={C.unit: unit_ids, C.trial: np.asarray([0])},
+        name="spikes",
+    )
+    da.attrs[C.attr_time_unit] = time_unit
+    da.attrs[C.attr_timebase] = "session"
+    da.attrs[C.attr_kind] = "spikes_ragged"
+    da.attrs[C.attr_history] = ["from_dataframe(units_only)"]
+
+    if unit_coords is None:
+        exclude = set()
+        if unit_id_col is not None:
+            exclude.add(unit_id_col)
+        exclude.add(spike_times_col)
+        unit_coords = _default_coords(units_df, exclude)
+
+    for c in unit_coords:
+        da = da.assign_coords({c: (C.unit, units_df[c].to_numpy())})
+
+    return da
+
+
+def _build_spikes_with_trials(
+    units_df: pd.DataFrame,
+    trials_df: pd.DataFrame,
+    *,
+    spike_times_col: str,
+    unit_id_col: Optional[str],
+    trial_id_col: Optional[str],
+    trial_start_col: str,
+    trial_end_col: str,
+    align_to: Optional[str],  # anchor column in trials_df; default trial_start
+    unit_coords: Optional[List[str]],
+    trial_coords: Optional[List[str]],
+    bin_size: Optional[float],
+    window: Optional[Tuple[float, float]],
+    time: Optional[np.ndarray],
+    time_unit: str,
+) -> xr.DataArray:
+    """
+    Case 3/4: units_df + trials_df.
+    - no bin_size -> ragged (unit, trial) relative to anchor (default trial_start)
+    - bin_size    -> dense  (unit, trial, time) binned relative to anchor within window/time
+    Spike times are assumed to be *session time* in units_df, segmented by [trial_start, trial_end].
+    """
+    if spike_times_col not in units_df.columns:
+        raise FromDataFrameError(
+            f"units_df must contain {spike_times_col!r} column."
+        )
+    if (
+        trial_start_col not in trials_df.columns
+        or trial_end_col not in trials_df.columns
+    ):
+        raise FromDataFrameError(
+            f"trials_df must contain trial_start_col={trial_start_col!r} and "
+            f"trial_end_col={trial_end_col!r}."
+        )
+
+    unit_ids = _get_ids(units_df, unit_id_col, "unit")
+    trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+
+    t_start = pd.to_numeric(
+        trials_df[trial_start_col], errors="coerce"
+    ).to_numpy(dtype=float)
+    t_end = pd.to_numeric(trials_df[trial_end_col], errors="coerce").to_numpy(
+        dtype=float
+    )
+
+    if np.any(~np.isfinite(t_start)) or np.any(~np.isfinite(t_end)):
+        raise FromDataFrameError(
+            "trial start/end contains NaNs; fill/drop before ingestion."
+        )
+    if np.any(t_end < t_start):
+        raise FromDataFrameError("Found trials with trial_end < trial_start.")
+
+    if align_to is None:
+        anchor = t_start
+        anchor_name = trial_start_col
+    else:
+        if align_to not in trials_df.columns:
+            raise FromDataFrameError(
+                f"align_to={align_to!r} not found in trials_df."
+            )
+        anchor = pd.to_numeric(trials_df[align_to], errors="coerce").to_numpy(
+            dtype=float
+        )
+        if np.any(~np.isfinite(anchor)):
+            raise FromDataFrameError(
+                f"align_to={align_to!r} contains NaNs; fill/drop before ingestion."
+            )
+        anchor_name = align_to
+
+    # Determine dense time axis if needed
+    centers: Optional[np.ndarray]
+    if bin_size is None:
+        centers = None
+    else:
+        if time is not None:
+            centers = np.asarray(time, dtype=float)
+        else:
+            if window is None:
+                raise FromDataFrameError(
+                    "bin_size specified but window is None."
+                )
+            centers = _make_time_centers(bin_size, window)
+
+    n_units = len(units_df)
+    n_trials = len(trials_df)
+
+    if centers is None:
+        out = np.empty((n_units, n_trials), dtype=object)
+        for ui in range(n_units):
+            spk_sess = _ensure_1d_float_array(
+                units_df.iloc[ui][spike_times_col],
+                ctx=f"unit {ui} spike_times",
+            )
+
+            # Vectorized bounds -> indices for all trials (O(n_trials log n_spikes))
+            lo = np.searchsorted(spk_sess, t_start, side="left")
+            hi = np.searchsorted(
+                spk_sess, t_end, side="right"
+            )  # inclusive of t_end
+
+            # Ragged extraction (must create one object per trial)
+            out[ui, :] = [spk_sess[l:h] - a for l, h, a in zip(lo, hi, anchor)]
+
+        da = xr.DataArray(
+            out,
+            dims=(C.unit, C.trial),
+            coords={C.unit: unit_ids, C.trial: trial_ids},
+            name="spikes",
+        )
+        da.attrs[C.attr_kind] = "spikes_ragged"
+    else:
+        edges, dt = _bin_edges_from_centers(centers)
+        out = np.zeros((n_units, n_trials, len(centers)), dtype=float)
+
+        for ui in range(n_units):
+            spk_sess = _ensure_1d_float_array(
+                units_df.iloc[ui][spike_times_col],
+                ctx=f"unit {ui} spike_times",
+            )
+            for ti in range(n_trials):
+                lo = np.searchsorted(spk_sess, t_start[ti], side="left")
+                hi = np.searchsorted(spk_sess, t_end[ti], side="right")
+                rel = spk_sess[lo:hi] - anchor[ti]
+                counts, _ = np.histogram(rel, bins=edges)
+                out[ui, ti, :] = counts / dt  # rate (Hz)
+
+        da = xr.DataArray(
+            out,
+            dims=(C.unit, C.trial, C.time),
+            coords={C.unit: unit_ids, C.trial: trial_ids, C.time: centers},
+            name="spikes",
+        )
+        da.attrs[C.attr_kind] = "binned"
+
+    # Attach metadata as coords
+    if unit_coords is None:
+        exclude = {spike_times_col}
+        if unit_id_col is not None:
+            exclude.add(unit_id_col)
+        unit_coords = _default_coords(units_df, exclude)
+
+    for c in unit_coords:
+        da = da.assign_coords({c: (C.unit, units_df[c].to_numpy())})
+
+    if trial_coords is None:
+        exclude = {trial_start_col, trial_end_col}
+        if trial_id_col is not None:
+            exclude.add(trial_id_col)
+        if align_to is not None:
+            exclude.add(align_to)
+        trial_coords = _default_coords(trials_df, exclude)
+
+    for c in trial_coords:
+        da = da.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
+
+    da.attrs[C.attr_time_unit] = time_unit
+    da.attrs[C.attr_timebase] = "trial"
+    da.attrs[C.attr_history] = [
+        f"from_dataframe(units+trials, anchor={anchor_name})"
+    ]
+
+    return da
+
+
+def _looks_like_units_df(df: pd.DataFrame, spike_times_col: str) -> bool:
+    """Heuristic check for whether a DataFrame looks like a units/spikes table."""
+    return spike_times_col in df.columns
+
+
+# -----------------------------
+# Public API
+# -----------------------------
+def from_dataframe(
+    *dfs: pd.DataFrame,
+    # IDs: default to index unless explicitly provided
+    unit_id_col: Optional[str] = None,
+    trial_id_col: Optional[str] = None,
+    # Spikes schema
+    spike_times_col: str = "spike_times",
+    # Trials schema for segmentation
+    trial_start_col: str = "trial_start",
+    trial_end_col: str = "trial_end",
+    align_to: Optional[str] = None,  # anchor per trial; default trial_start
+    # Events schema (only used when trials_df is the ONLY df passed)
+    event_cols: Optional[Dict[str, str]] = None,
+    epoch_cols: Optional[Dict[str, Tuple[str, str]]] = None,
+    long_event_col: Optional[str] = None,
+    long_time_col: Optional[str] = None,
+    long_end_time_col: Optional[str] = None,
+    # Coords copied from input tables
+    unit_coords: Optional[List[str]] = None,
+    trial_coords: Optional[List[str]] = None,
+    # Binning control (only relevant when both units_df + trials_df passed)
+    bin_size: Optional[float] = None,
+    window: Optional[Tuple[float, float]] = None,
+    time: Optional[np.ndarray] = None,
+    # Metadata
+    time_unit: str = "s",
+    validate: bool = True,
+) -> xr.DataArray:
+    """
+    Four cases (by number of DataFrames and bin_size):
+
+    1) from_dataframe(units_df):
+         -> ragged spikes DataArray (unit, trial) with trial=[0]
+            spike times are session-time (no segmentation)
+
+    2) from_dataframe(trials_df) where it does NOT look like a units table:
+         -> events/epochs DataArray (trial, event, bound)
+
+    3) from_dataframe(units_df, trials_df, bin_size=None):
+         -> ragged spikes DataArray (unit, trial)
+            segmented by [trial_start, trial_end] and expressed relative to anchor
+            (anchor = align_to column if provided else trial_start)
+
+    4) from_dataframe(units_df, trials_df, bin_size=...):
+         -> dense binned spikes DataArray (unit, trial, time) (rate Hz)
+            segmented by trial bounds and binned relative to anchor within window/time
+    """
+    if len(dfs) == 0 or len(dfs) > 2:
+        raise FromDataFrameError("from_dataframe expects 1 or 2 DataFrames.")
+
+    if len(dfs) == 1:
+        df0 = dfs[0]
+        if _looks_like_units_df(df0, spike_times_col):
+            spikes = _build_spikes_units_only(
+                df0,
+                spike_times_col=spike_times_col,
+                unit_id_col=unit_id_col,
+                unit_coords=unit_coords,
+                time_unit=time_unit,
+            )
+            if validate:
+                validate_xarray(spikes)
+            return spikes
+
+        # Otherwise: treat as trials/events table
+        events = _build_events(
+            df0,
+            trial_id_col=trial_id_col,
+            event_cols=event_cols,
+            epoch_cols=epoch_cols,
+            long_event_col=long_event_col,
+            long_time_col=long_time_col,
+            long_end_time_col=long_end_time_col,
+            trial_coords=trial_coords,
+            time_unit=time_unit,
+            timebase="session",
+        )
+        return events
+
+    # len(dfs) == 2: determine which is units vs trials by presence of spike_times_col
+    df_a, df_b = dfs
+    a_is_units = _looks_like_units_df(df_a, spike_times_col)
+    b_is_units = _looks_like_units_df(df_b, spike_times_col)
+
+    if a_is_units and not b_is_units:
+        units_df, trials_df = df_a, df_b
+    elif b_is_units and not a_is_units:
+        units_df, trials_df = df_b, df_a
+    elif a_is_units and b_is_units:
+        raise FromDataFrameError(
+            f"Both DataFrames contain {spike_times_col!r}; cannot infer units_df vs trials_df."
+        )
+    else:
+        raise FromDataFrameError(
+            f"Neither DataFrame contains {spike_times_col!r}; cannot infer units_df."
+        )
+
+    spikes = _build_spikes_with_trials(
+        units_df,
+        trials_df,
+        spike_times_col=spike_times_col,
+        unit_id_col=unit_id_col,
+        trial_id_col=trial_id_col,
+        trial_start_col=trial_start_col,
+        trial_end_col=trial_end_col,
+        align_to=align_to,
+        unit_coords=unit_coords,
+        trial_coords=trial_coords,
+        bin_size=bin_size,
+        window=window,
+        time=time,
+        time_unit=time_unit,
+    )
+
+    if validate:
+        validate_xarray(spikes)
+    return spikes
+
+
+__all__ = ["from_dataframe", "FromDataFrameError"]

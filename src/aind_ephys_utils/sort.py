@@ -1,5 +1,4 @@
-""" Module to sort a DataFrame of spike times
-"""
+"""Module to sort a DataFrame of spike times"""
 
 import numpy as np
 
