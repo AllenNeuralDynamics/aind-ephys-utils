@@ -17,7 +17,9 @@ readme = "README.md"
 dynamic = ["version"]
 
 dependencies = [
-    'xarray'
+    'xarray',
+    'scikit-learn',
+    'matplotlib'
 ]
 
 [project.optional-dependencies]
