@@ -6,20 +6,21 @@ the `.ephys.reduce` accessor.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Sequence, Tuple, Union
+from itertools import combinations
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import xarray as xr
 import pandas as pd
+import xarray as xr
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from itertools import combinations
+from sklearn.linear_model import LogisticRegression
 
-from .utils import preserve_coords
 from ..core.conventions import C
+from .utils import preserve_coords
 
-def reduce(
+
+def reduce(  # noqa: C901
     da: xr.DataArray,
     *,
     method: str,
@@ -28,7 +29,9 @@ def reduce(
     stack: Optional[Tuple[str, ...]] = None,
     unstack: bool = True,
     return_dataset: bool = True,
-    window: Optional[Union[Tuple[float, float], Sequence[Tuple[float, float]]]] = None,
+    window: Optional[
+        Union[Tuple[float, float], Sequence[Tuple[float, float]]]
+    ] = None,
     window_apply: str = "fit_only",
     orthogonalize: str = "none",
     orthogonalize_across: str = "none",
@@ -179,7 +182,10 @@ def reduce(
     out = xr.DataArray(
         scores,
         dims=("_sample", "component"),
-        coords={"_sample": da_stack["_sample"], "component": np.arange(n_components)},
+        coords={
+            "_sample": da_stack["_sample"],
+            "component": np.arange(n_components),
+        },
         name=da.name,
         attrs=dict(da.attrs),
     ).transpose("component", "_sample")
@@ -195,7 +201,9 @@ def reduce(
             coords={"component": np.arange(n_components)},
             name="explained_variance_ratio",
         )
-        weights = _weights_to_dataarray(model.components_, da_stack, component_count=n_components)
+        weights = _weights_to_dataarray(
+            model.components_, da_stack, component_count=n_components
+        )
         ds = xr.Dataset(
             {
                 "projections": out,
@@ -255,7 +263,9 @@ def _reduce_dpca(
     if condition_dims is None or len(condition_dims) == 0:
         raise ValueError("condition_dims is required for method='dpca'.")
     if trial_dim not in da.dims:
-        raise ValueError(f"trial_dim {trial_dim!r} not found in DataArray dims.")
+        raise ValueError(
+            f"trial_dim {trial_dim!r} not found in DataArray dims."
+        )
     if time_dim not in da.dims:
         raise ValueError(f"time_dim {time_dim!r} not found in DataArray dims.")
     if dim is None:
@@ -264,7 +274,9 @@ def _reduce_dpca(
         else:
             raise ValueError("dim is required for method='dpca'.")
 
-    da_cond = _condition_mean(da, trial_dim=trial_dim, condition_dims=condition_dims)
+    da_cond = _condition_mean(
+        da, trial_dim=trial_dim, condition_dims=condition_dims
+    )
     factor_dims = list(condition_dims) + [time_dim]
 
     _, marginals = _marginalize(da_cond, factor_dims=factor_dims)
@@ -291,7 +303,7 @@ def _reduce_dpca(
     return xr.Dataset({"projections": projections, "weights": weights})
 
 
-def _reduce_supervised(
+def _reduce_supervised(  # noqa: C901
     da: xr.DataArray,
     *,
     method: str,
@@ -299,7 +311,9 @@ def _reduce_supervised(
     n_components: Optional[int],
     stack: Optional[Tuple[str, ...]],
     unstack: bool,
-    window: Optional[Union[Tuple[float, float], Sequence[Tuple[float, float]]]],
+    window: Optional[
+        Union[Tuple[float, float], Sequence[Tuple[float, float]]]
+    ],
     window_apply: str,
     orthogonalize: str,
     orthogonalize_across: str,
@@ -313,7 +327,9 @@ def _reduce_supervised(
 ) -> xr.Dataset:
     """Supervised linear reductions (coding direction, logistic, lda, rrr)."""
     if cv is not None:
-        raise NotImplementedError("cv is not implemented for supervised methods.")
+        raise NotImplementedError(
+            "cv is not implemented for supervised methods."
+        )
     if dim is None:
         if C.unit in da.dims:
             dim = C.unit
@@ -381,7 +397,9 @@ def _reduce_supervised(
                     wts = (mean1 - mean0)[None, :]
                 elif method == "logistic":
                     if np.unique(y_fit).size < 2:
-                        raise ValueError("logistic requires at least 2 classes.")
+                        raise ValueError(
+                            "logistic requires at least 2 classes."
+                        )
                     if regularization is None:
                         C_val = 1.0
                     elif regularization <= 0:
@@ -552,7 +570,9 @@ def _pca_marginal(
         attrs=dict(da.attrs),
     ).transpose("component", "_sample")
     out = out.unstack("_sample")
-    weights = _weights_to_dataarray(model.components_, da_stack, component_count=n_components)
+    weights = _weights_to_dataarray(
+        model.components_, da_stack, component_count=n_components
+    )
     return out, weights
 
 
@@ -614,7 +634,9 @@ def _stack_targets(
     if len(target_dims) != 1:
         raise ValueError("targets must have exactly one non-sample dim.")
     tdim = target_dims[0]
-    tstack = targets.stack(_sample=tuple(sample_dims)).transpose("_sample", tdim)
+    tstack = targets.stack(_sample=tuple(sample_dims)).transpose(
+        "_sample", tdim
+    )
     Y = np.asarray(tstack.data)
     if np.isnan(Y).any():
         Y = np.nan_to_num(Y, nan=0.0)
@@ -682,12 +704,18 @@ def _expand_marginal_dims(
 
 
 def _window_mask(
-    da_stack: xr.DataArray, *, time_dim: str, window: Optional[Tuple[float, float]]
+    da_stack: xr.DataArray,
+    *,
+    time_dim: str,
+    window: Optional[Tuple[float, float]],
 ) -> Optional[np.ndarray]:
     """Build a boolean mask for sample times inside the window."""
     if window is None:
         return None
-    if time_dim not in da_stack.dims and time_dim not in da_stack["_sample"].dims:
+    if (
+        time_dim not in da_stack.dims
+        and time_dim not in da_stack["_sample"].dims
+    ):
         return None
     index = da_stack["_sample"].to_index()
     if time_dim not in index.names:
@@ -705,7 +733,9 @@ def _select_projection(
 ) -> Tuple[np.ndarray, xr.DataArray]:
     """Select which samples to project based on window_apply."""
     if window_apply not in ("fit_only", "fit_and_project"):
-        raise ValueError("window_apply must be 'fit_only' or 'fit_and_project'.")
+        raise ValueError(
+            "window_apply must be 'fit_only' or 'fit_and_project'."
+        )
     if window_apply == "fit_and_project" and window_mask is not None:
         return X[window_mask], da_stack.isel(_sample=window_mask)
     return X, da_stack
@@ -728,7 +758,9 @@ def _orthogonalize_weights(weights: np.ndarray, *, method: str) -> np.ndarray:
 
 
 def _normalize_windows(
-    window: Optional[Union[Tuple[float, float], Sequence[Tuple[float, float]]]]
+    window: Optional[
+        Union[Tuple[float, float], Sequence[Tuple[float, float]]]
+    ],
 ) -> Sequence[Optional[Tuple[float, float]]]:
     """Normalize window input to a list."""
     if window is None:
@@ -739,7 +771,7 @@ def _normalize_windows(
 
 
 def _normalize_label_sets(
-    labels: Optional[Union[xr.DataArray, Dict[str, xr.DataArray]]]
+    labels: Optional[Union[xr.DataArray, Dict[str, xr.DataArray]]],
 ) -> Sequence[Tuple[str, xr.DataArray]]:
     """Normalize labels input to a list of (name, labels) pairs."""
     if labels is None:
@@ -749,7 +781,7 @@ def _normalize_label_sets(
     return [("labels", labels)]
 
 
-def _assemble_supervised_output(
+def _assemble_supervised_output(  # noqa: C901
     da: xr.DataArray,
     *,
     mode_entries: Sequence[Dict[str, object]],
@@ -800,7 +832,9 @@ def _assemble_supervised_output(
                 groups.setdefault(key, []).append((entry, ci))
 
         for _, items in groups.items():
-            W = np.stack([np.asarray(e["weights"])[ci] for e, ci in items], axis=0)
+            W = np.stack(
+                [np.asarray(e["weights"])[ci] for e, ci in items], axis=0
+            )
             W_ortho = _orthogonalize_weights(W, method=orthogonalize)
             for wi, (entry, ci) in enumerate(items):
                 X_proj = np.asarray(entry["X_proj"])

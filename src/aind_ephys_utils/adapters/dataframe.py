@@ -24,7 +24,7 @@ The resulting DataArrays are validated by `aind_ephys_utils.core.validate` when
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -129,7 +129,7 @@ def _infer_wide_event_cols(
     return event_cols, epoch_cols
 
 
-def _build_events(
+def _build_events(  # noqa: C901
     trials_df: pd.DataFrame,
     *,
     trial_id_col: Optional[str],
@@ -162,7 +162,8 @@ def _build_events(
             or long_time_col not in trials_df.columns
         ):
             raise FromDataFrameError(
-                f"Long-format events requires columns {long_event_col!r} and {long_time_col!r}."
+                "Long-format events requires columns "
+                f"{long_event_col!r} and {long_time_col!r}."
             )
 
         # Preserve event label order
@@ -342,7 +343,7 @@ def _build_spikes_units_only(
     return da
 
 
-def _build_spikes_with_trials(
+def _build_spikes_with_trials(  # noqa: C901
     units_df: pd.DataFrame,
     trials_df: pd.DataFrame,
     *,
@@ -362,8 +363,10 @@ def _build_spikes_with_trials(
     """
     Case 3/4: units_df + trials_df.
     - no bin_size -> ragged (unit, trial) relative to anchor (default trial_start)
-    - bin_size    -> dense  (unit, trial, time) binned relative to anchor within window/time
-    Spike times are assumed to be *session time* in units_df, segmented by [trial_start, trial_end].
+    - bin_size    -> dense  (unit, trial, time) binned relative to anchor
+      within window/time
+    Spike times are assumed to be *session time* in units_df, segmented by
+    [trial_start, trial_end].
     """
     if spike_times_col not in units_df.columns:
         raise FromDataFrameError(
@@ -374,7 +377,10 @@ def _build_spikes_with_trials(
             f"trials_df must contain trial_start_col={trial_start_col!r}."
         )
     if trial_end_col not in trials_df.columns:
-        if trial_end_col == C.trial_end_col and "stop_time" in trials_df.columns:
+        if (
+            trial_end_col == C.trial_end_col
+            and "stop_time" in trials_df.columns
+        ):
             trial_end_col = "stop_time"
         else:
             raise FromDataFrameError(
@@ -428,7 +434,7 @@ def _build_spikes_with_trials(
 
         lo = np.searchsorted(spk_sess, t_start, side="left")
         hi = np.searchsorted(spk_sess, t_end, side="right")
-        out[ui, :] = [spk_sess[l:h] for l, h in zip(lo, hi)]
+        out[ui, :] = [spk_sess[lo_i:hi_i] for lo_i, hi_i in zip(lo, hi)]
 
     da_session = xr.DataArray(
         out,
@@ -522,7 +528,9 @@ def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
         tmin = min(tmin, float(arr.min()))
         tmax = max(tmax, float(arr.max()))
     if not np.isfinite(tmin) or not np.isfinite(tmax):
-        raise FromDataFrameError("Cannot infer valid interval from empty spikes.")
+        raise FromDataFrameError(
+            "Cannot infer valid interval from empty spikes."
+        )
     if tmin == tmax:
         tmax = tmin + 1e-6
     return tmin, tmax
@@ -626,11 +634,13 @@ def from_dataframe(
         units_df, trials_df = df_b, df_a
     elif a_is_units and b_is_units:
         raise FromDataFrameError(
-            f"Both DataFrames contain {spike_times_col!r}; cannot infer units_df vs trials_df."
+            f"Both DataFrames contain {spike_times_col!r}; "
+            "cannot infer units_df vs trials_df."
         )
     else:
         raise FromDataFrameError(
-            f"Neither DataFrame contains {spike_times_col!r}; cannot infer units_df."
+            f"Neither DataFrame contains {spike_times_col!r}; "
+            "cannot infer units_df."
         )
 
     spikes = _build_spikes_with_trials(

@@ -5,7 +5,11 @@ import unittest
 import numpy as np
 import xarray as xr
 
-from aind_ephys_utils.core.validate import EphysValidationError, infer_kind, validate
+from aind_ephys_utils.core.validate import (
+    EphysValidationError,
+    infer_kind,
+    validate,
+)
 
 
 class ValidateTest(unittest.TestCase):

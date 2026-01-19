@@ -8,6 +8,7 @@ import xarray as xr
 
 from .utils import preserve_coords
 
+
 def normalize(
     da: xr.DataArray,
     *,

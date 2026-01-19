@@ -75,7 +75,7 @@ exclude_lines = ["if __name__ == .__main__.:"]
 fail_under = 50
 
 [tool.isort]
-line_length = 79
+line_length = 90
 profile = "black"
 src_paths = ["src", "tests"]
 

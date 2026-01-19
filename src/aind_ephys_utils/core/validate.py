@@ -8,7 +8,7 @@ infer and validate those conventions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 import xarray as xr
@@ -130,7 +130,7 @@ def _require_dims(
 def _require_time_coord_if_has_time_dim(da: xr.DataArray) -> None:
     """Require a numeric `time` coordinate when a `time` dimension is present."""
     if C.time in da.dims and C.time not in da.coords:
-        # xarray can have a dim without an explicit coord; but for analysis this is painful.
+        # xarray can have a dim without an explicit coord; but analysis suffers.
         raise EphysValidationError(
             f"Expected a '{C.time}' coordinate when '{C.time}' is a dimension. "
             f"Tip: assign time values with da = da.assign_coords(time=...)."
@@ -153,10 +153,11 @@ def _validate_ragged_contents(
             continue
         arr = np.asarray(x)
         if arr.ndim != 1:
-            raise EphysValidationError(
+            msg = (
                 "Ragged spikes entries must be 1D arrays of spike times. "
                 f"Found entry with shape {arr.shape}."
             )
+            raise EphysValidationError(msg)
         if arr.size == 0:
             continue
         if arr.dtype.kind not in ("i", "u", "f"):  # ints or floats
@@ -221,11 +222,12 @@ def validate(
         if require_time_coord:
             _require_time_coord_if_has_time_dim(da)
     else:
-        raise EphysValidationError(
+        msg = (
             "Could not infer DataArray kind. "
             "Expected ragged spikes (object dtype with dims trial/unit), "
             "binned spikes (trial/unit/time), or continuous (numeric with time). "
             f"Got dims={da.dims}, dtype={da.dtype!r}."
         )
+        raise EphysValidationError(msg)
 
     return ValidationResult(ok=True, kind=inferred, message="ok")

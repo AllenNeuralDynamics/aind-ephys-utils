@@ -90,7 +90,8 @@ class EphysDataArrayAccessor:
             "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
             "  - da.ephys.normalize(dim='trial', method='zscore')\n"
             "  - da.ephys.psth(dim='trial', reduce='mean')\n"
-            "  - da.ephys.reduce(method='pca', dim='unit', n_components=10, stack=('trial','time'))\n"
+            "  - da.ephys.reduce(method='pca', dim='unit', n_components=10,\n"
+            "    stack=('trial','time'))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
         )
 
@@ -244,12 +245,6 @@ class EphysDataArrayAccessor:
         Methods include PCA variants, dPCA, and supervised linear reductions.
         """
         return _reduce(self._obj, *args, **kwargs)
-
-    def plot(self, *args: Any, **kwargs: Any) -> xr.DataArray:
-        """Plot helper entry point (sub-accessor)."""
-        raise NotImplementedError(
-            "Use da.ephys.plot.<method>(...) to call plotting helpers."
-        )
 
     @property
     def plot(self) -> _PlotAccessor:  # type: ignore[override]

@@ -62,22 +62,25 @@ def _get_event_times(events: xr.Dataset, to: str) -> xr.DataArray:
     """
     t = events[C.event_time_var]
     if C.event not in t.dims:
-        raise EphysAlignError(
+        msg = (
             f"events['{C.event_time_var}'] must have a '{C.event}' dimension. "
             f"Got dims {t.dims}."
         )
+        raise EphysAlignError(msg)
     if to not in t.coords.get(C.event, []):
         # coords might not exist; try fallback on indexes
         try:
             _ = t.sel({C.event: to})
         except Exception as e:
-            raise EphysAlignError(
-                f"Could not find event label {to!r} in events['{C.event_time_var}']."
-            ) from e
+            msg = (
+                f"Could not find event label {to!r} in "
+                f"events['{C.event_time_var}']."
+            )
+            raise EphysAlignError(msg) from e
     return t.sel({C.event: to})  # dims (trial,)
 
 
-def align(
+def align(  # noqa: C901
     da: xr.DataArray,
     *,
     events: Union[xr.Dataset, xr.DataArray],
@@ -110,14 +113,19 @@ def align(
 
         if C.trial in da.dims:
             # Broadcast subtract per-trial t0 from time coordinate to get aligned time.
-            # We'll create an aligned time coordinate for each trial by shifting the data via interpolation.
+            # We'll create an aligned time coordinate for each trial by shifting
+            # the data via interpolation.
             #
-            # Simple approach: for each trial, reindex/interp onto a common aligned time grid.
+            # Simple approach: for each trial, reindex/interp onto a common
+            # aligned time grid.
             time = da[C.time].values
-            aligned_time = time  # assume time already relative per trial; if not, you can change this.
-            # If time is absolute, you'd want aligned_time = time - t0(trial). But that becomes 2D time coord.
-            # To keep things simple and memorable, v0 assumes trial-wise time coords are already in trial-time.
-            # Users can convert session->trial before using align, or you can add a session-time mode later.
+            # Assume time already relative per trial; if not, adjust upstream.
+            aligned_time = time
+            # If time is absolute, you'd want aligned_time = time - t0(trial).
+            # That becomes a 2D time coord. To keep things simple and
+            # memorable, v0 assumes trial-wise time coords are already in
+            # trial-time. Users can convert session->trial before using align,
+            # or add a session-time mode later.
 
             # Slice window
             mask = (aligned_time >= tmin) & (aligned_time <= tmax)
@@ -133,9 +141,11 @@ def align(
         else:
             # No trial dim: interpret as a single continuous trace with event time scalar
             if t0.size != 1:
-                raise EphysAlignError(
-                    "Aligning a no-trial DataArray requires a single event time (trial size 1)."
+                msg = (
+                    "Aligning a no-trial DataArray requires a single event time "
+                    "(trial size 1)."
                 )
+                raise EphysAlignError(msg)
             t0_scalar = float(t0.values)
             aligned_time = da[C.time].values - t0_scalar
             out = da.assign_coords({C.time: aligned_time}).sel(
@@ -147,7 +157,7 @@ def align(
             return out
 
     if kind == "spikes_ragged":
-        # da dims include (trial, unit), each entry is array of spike times (session or trial).
+        # da dims include (trial, unit), each entry is array of spike times.
         if C.trial not in da.dims:
             raise EphysAlignError(
                 "Ragged spikes alignment requires a 'trial' dimension."

@@ -11,7 +11,7 @@ from ..core.conventions import C
 from .utils import preserve_coords
 
 
-def bin(
+def bin(  # noqa: C901
     da: xr.DataArray,
     dt: float,
     tlim: Optional[Tuple[float, float]] = None,
@@ -101,7 +101,9 @@ def bin(
         dims = (C.trial, C.time)
         coords = {C.trial: da[C.trial], C.time: centers}
     else:
-        raise ValueError("bin requires at least a 'trial' or 'unit' dimension.")
+        raise ValueError(
+            "bin requires at least a 'trial' or 'unit' dimension."
+        )
 
     if output == "rate":
         data = data / dt

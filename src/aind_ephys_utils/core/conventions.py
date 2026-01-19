@@ -43,7 +43,9 @@ ATTR_KIND: Final[str] = (
     "ephys.kind"  # "spikes_ragged" | "continuous" | "binned"
 )
 ATTR_HISTORY: Final[str] = "ephys.history"  # list[str]
-ATTR_VALID_INTERVALS: Final[str] = "ephys.valid_intervals"  # list[tuple[float,float]]
+ATTR_VALID_INTERVALS: Final[str] = (
+    "ephys.valid_intervals"  # list[tuple[float,float]]
+)
 
 
 @dataclass(frozen=True)

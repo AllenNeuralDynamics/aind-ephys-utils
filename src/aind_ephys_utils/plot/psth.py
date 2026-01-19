@@ -76,7 +76,9 @@ def psth(
         x = da_plot[C.time].values if C.time in da_plot.coords else None
         y = da_plot.values
         if x is None:
-            ax.plot(y, color=c, alpha=alpha, linewidth=linewidth, label=labels[-1])
+            ax.plot(
+                y, color=c, alpha=alpha, linewidth=linewidth, label=labels[-1]
+            )
         else:
             ax.plot(
                 x,
@@ -130,9 +132,7 @@ def _group_trials(
     return out
 
 
-def _resolve_colors(
-    color: Optional[str], n: int
-) -> Sequence[Optional[str]]:
+def _resolve_colors(color: Optional[str], n: int) -> Sequence[Optional[str]]:
     """Resolve a list of colors for grouped plots."""
     if n <= 1:
         return [color]

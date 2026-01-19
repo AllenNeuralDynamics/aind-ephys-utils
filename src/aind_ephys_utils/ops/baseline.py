@@ -36,7 +36,9 @@ def baseline(
 
     tmin, tmax = window
     if tmin >= tmax:
-        raise ValueError(f"window must be (min,max) with min < max, got {window}.")
+        raise ValueError(
+            f"window must be (min,max) with min < max, got {window}."
+        )
 
     baseline_da = da.sel({dim: slice(tmin, tmax)})
     if baseline_da.sizes.get(dim, 0) == 0:

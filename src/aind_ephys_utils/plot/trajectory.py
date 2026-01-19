@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
-import numpy as np
 import xarray as xr
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 from ..core.conventions import C
 
 
-def trajectory(
+def trajectory(  # noqa: C901
     data: xr.DataArray,
     *,
     group_by: Optional[Union[str, Sequence[str]]] = None,
@@ -149,9 +148,7 @@ def _group_trials(
     return out
 
 
-def _resolve_colors(
-    color: Optional[str], n: int
-) -> Sequence[Optional[str]]:
+def _resolve_colors(color: Optional[str], n: int) -> Sequence[Optional[str]]:
     """Resolve a list of colors for grouped plots."""
     if n <= 1:
         return [color]

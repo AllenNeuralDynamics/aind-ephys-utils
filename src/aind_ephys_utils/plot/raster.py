@@ -11,7 +11,7 @@ import xarray as xr
 from ..core.conventions import C
 
 
-def raster(
+def raster(  # noqa: C901
     spikes: xr.DataArray,
     *,
     group_by: Optional[Union[str, Sequence[str]]] = None,
@@ -53,7 +53,9 @@ def raster(
         The matplotlib Axes.
     """
     if spikes.dtype != object:
-        raise ValueError("raster expects a ragged spike DataArray with dtype=object.")
+        raise ValueError(
+            "raster expects a ragged spike DataArray with dtype=object."
+        )
     if C.trial not in spikes.dims:
         if C.unit in spikes.dims:
             spikes = spikes.expand_dims({C.trial: [0]}).transpose(
@@ -98,7 +100,9 @@ def raster(
             seq = _as_list_of_1d_arrays(np.asarray(da.values, dtype=object))
             if tlim is not None:
                 tmin, tmax = tlim
-                seq = [s[(s >= tmin) & (s <= tmax)] if s.size else s for s in seq]
+                seq = [
+                    s[(s >= tmin) & (s <= tmax)] if s.size else s for s in seq
+                ]
 
             lineoffsets = np.arange(y0, y0 + len(seq))
             artists = ax.eventplot(

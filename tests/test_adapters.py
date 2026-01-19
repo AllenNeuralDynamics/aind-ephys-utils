@@ -16,9 +16,7 @@ class AdapterTest(unittest.TestCase):
         units_df = pd.DataFrame(
             {
                 "unit_id": [0],
-                "spike_times": [
-                    np.array([0.05, 0.15, 0.35], dtype=float)
-                ],
+                "spike_times": [np.array([0.05, 0.15, 0.35], dtype=float)],
             }
         )
         trials_df = pd.DataFrame(
