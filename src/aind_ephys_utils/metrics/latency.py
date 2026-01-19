@@ -1,8 +1,10 @@
-"""Module to compute response latency to a set of events"""
+"""Metrics related to response latency."""
+
+from __future__ import annotations
 
 import numpy as np
 
-from . import align
+from .. import align
 
 
 def spike_latency(
@@ -14,13 +16,13 @@ def spike_latency(
     bin_size=0.001,
 ):
     """
-    Computes latency of spikes to a set of events
+    Computes latency of spikes to a set of events.
 
     If `use_psth` is set to True, the latency will be computed
-    using the average PSTH, rather than spikes on individual trials
+    using the average PSTH, rather than spikes on individual trials.
 
     If `use_psth` is set to False, the latency will be computed
-    as the median time to first spike on individual trials
+    as the median time to first spike on individual trials.
 
     Parameters
     ----------
@@ -53,9 +55,7 @@ def spike_latency(
         First spike latency in s
     individual_latencies : ndarray
         Latency values for all trials with spikes
-
     """
-
     if use_psth:
         win = np.array([0, 0.25, 0.5, 0.25, 0])  # 5-point Hann window
 
@@ -75,9 +75,8 @@ def spike_latency(
 
         return first_spike_latency * bin_size, psth
 
-    else:
-        df = align.to_events(times, events, (0, interval[1]), return_df=True)
+    df = align.to_events(times, events, (0, interval[1]), return_df=True)
 
-        latencies = np.squeeze(df.groupby("event_index").min()["time"].values)
+    latencies = np.squeeze(df.groupby("event_index").min()["time"].values)
 
-        return np.median(latencies), latencies
+    return np.median(latencies), latencies

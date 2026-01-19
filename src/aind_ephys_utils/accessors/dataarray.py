@@ -13,8 +13,15 @@ from typing import Any, Optional, Tuple, Union
 
 import xarray as xr
 
+from ..core.conventions import C
 from ..core.validate import validate
 from ..ops.align import align as _align
+from ..ops.baseline import baseline as _baseline
+from ..ops.bin import bin as _bin
+from ..ops.normalize import normalize as _normalize
+from ..ops.psth import psth as _psth
+from ..ops.reduce import reduce as _reduce
+from ..ops.smooth import smooth as _smooth
 
 
 @dataclass(frozen=True)
@@ -37,7 +44,10 @@ class EphysDataArrayAccessor:
       - da.ephys.validate()
       - da.ephys.align(events, to, window)
       - da.ephys.bin(...)      [stub for now]
-      - da.ephys.metrics(...)  [stub for now]
+      - da.ephys.smooth(...)   [stub for now]
+      - da.ephys.baseline(...) [stub for now]
+      - da.ephys.normalize(...) [stub for now]
+      - da.ephys.psth(...)     [stub for now]
       - da.ephys.reduce(...)   [stub for now]
       - da.ephys.plot.<...>    [optional accessor, stub for now]
     """
@@ -53,8 +63,11 @@ class EphysDataArrayAccessor:
             "da.ephys cheatsheet\n"
             "  - da.ephys.validate()\n"
             "  - da.ephys.align(events, to='go_cue', window=(-0.5, 1.0))\n"
-            "  - da.ephys.bin(dt=0.01, output='rate', smooth=0.02)\n"
-            "  - da.ephys.metrics(metrics=[...], baseline=(...), response=(...))\n"
+            "  - da.ephys.bin(dt=0.01, output='rate')\n"
+            "  - da.ephys.smooth(method='gaussian', sigma=0.02)\n"
+            "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
+            "  - da.ephys.normalize(dim='trial', method='zscore')\n"
+            "  - da.ephys.psth(dim='trial', reduce='mean')\n"
             "  - da.ephys.reduce(method='pca', dim='unit', n=10, stack=('trial','time'))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
         )
@@ -77,7 +90,7 @@ class EphysDataArrayAccessor:
 
     def align(
         self,
-        events: Union[xr.Dataset, xr.DataArray],
+        events: xr.DataArray,
         to: str,
         window: Tuple[float, float],
     ) -> xr.DataArray:
@@ -103,10 +116,10 @@ class EphysDataArrayAccessor:
     # --- stubs below: you’ll fill these in next ---
     def bin(
         self,
-        *,
         dt: float,
+        tlim: Optional[Tuple[float, float]] = None,
         output: str = "rate",
-        smooth: Optional[float] = None,
+        time_unit: str = "s",
     ) -> xr.DataArray:
         """Bin ragged spikes into a dense (trial, unit, time) representation.
 
@@ -116,8 +129,8 @@ class EphysDataArrayAccessor:
             Bin width in seconds.
         output:
             Output type (e.g. "rate" or "count").
-        smooth:
-            Optional smoothing parameter in seconds.
+        time_unit:
+            Unit for time values.
 
         Returns
         -------
@@ -128,16 +141,79 @@ class EphysDataArrayAccessor:
         -----
         This is a stub in the current refactor.
         """
-        raise NotImplementedError("da.ephys.bin is not implemented yet.")
+        return _bin(
+            self._obj, dt=dt, tlim=tlim, output=output, time_unit=time_unit
+        )
 
-    def metrics(self, *args: Any, **kwargs: Any) -> xr.Dataset:
-        """Compute spike/continuous-signal metrics and return them as a Dataset.
+    def smooth(
+        self,
+        *,
+        dim: str = C.time,
+        method: str = "gaussian",
+        sigma: Optional[float] = None,
+        window: Optional[float] = None,
+        boundary: str = "reflect",
+    ) -> xr.DataArray:
+        """Smooth a signal along a dimension.
 
         Notes
         -----
         This is a stub in the current refactor.
         """
-        raise NotImplementedError("da.ephys.metrics is not implemented yet.")
+        return _smooth(
+            self._obj,
+            dim=dim,
+            method=method,
+            sigma=sigma,
+            window=window,
+            boundary=boundary,
+        )
+
+    def baseline(
+        self,
+        *,
+        window: Tuple[float, float],
+        dim: str = C.time,
+        mode: str = "subtract",
+    ) -> xr.DataArray:
+        """Apply baseline correction over a window.
+
+        Notes
+        -----
+        This is a stub in the current refactor.
+        """
+        return _baseline(self._obj, window=window, dim=dim, mode=mode)
+
+    def normalize(
+        self,
+        *,
+        dim: Union[str, Tuple[str, ...]],
+        method: str = "zscore",
+    ) -> xr.DataArray:
+        """Normalize data across one or more dimensions.
+
+        Notes
+        -----
+        This is a stub in the current refactor.
+        """
+        return _normalize(self._obj, dim=dim, method=method)
+
+    def psth(
+        self,
+        *,
+        dim: str = C.trial,
+        reduce: str = "mean",
+        keep_trials: bool = False,
+    ) -> xr.DataArray:
+        """Reduce across trials to compute a PSTH-style summary.
+
+        Notes
+        -----
+        This is a stub in the current refactor.
+        """
+        return _psth(
+            self._obj, dim=dim, reduce=reduce, keep_trials=keep_trials
+        )
 
     def reduce(self, *args: Any, **kwargs: Any) -> xr.DataArray:
         """Reduce data dimensionality (e.g. PCA) in an xarray-friendly way.
@@ -146,7 +222,7 @@ class EphysDataArrayAccessor:
         -----
         This is a stub in the current refactor.
         """
-        raise NotImplementedError("da.ephys.reduce is not implemented yet.")
+        return _reduce(self._obj, *args, **kwargs)
 
     def plot(self, *args: Any, **kwargs: Any) -> xr.DataArray:
         """Plot helper entry point.

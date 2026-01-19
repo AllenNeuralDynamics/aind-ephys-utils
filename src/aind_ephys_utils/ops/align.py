@@ -124,6 +124,8 @@ def align(
             out = out.assign_coords(
                 {C.time: out[C.time].values - 0.0}
             )  # explicit no-op placeholder
+            out.attrs = dict(da.attrs)
+            out.attrs[C.attr_valid_intervals] = [window]
             return out
 
         else:
@@ -137,6 +139,8 @@ def align(
             out = da.assign_coords({C.time: aligned_time}).sel(
                 {C.time: slice(tmin, tmax)}
             )
+            out.attrs = dict(da.attrs)
+            out.attrs[C.attr_valid_intervals] = [window]
             return out
 
     if kind == "spikes_ragged":
@@ -186,6 +190,7 @@ def align(
         )
         # Restore original dim order if needed
         out_da = out_da.transpose(*da.dims)
+        out_da.attrs[C.attr_valid_intervals] = [window]
 
         return out_da
 

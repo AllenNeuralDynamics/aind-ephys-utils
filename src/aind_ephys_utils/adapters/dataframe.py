@@ -32,6 +32,8 @@ import xarray as xr
 
 from ..core.conventions import C
 from ..core.validate import validate as validate_xarray
+from ..ops.align import align as ops_align
+from ..ops.bin import bin as ops_bin
 
 
 class FromDataFrameError(ValueError):
@@ -265,51 +267,10 @@ def _build_events(
     return events
 
 
-def _make_time_centers(
-    bin_size: float, window: Tuple[float, float]
-) -> np.ndarray:
-    """Create bin centers for a fixed-width histogram.
-
-    Parameters
-    ----------
-    bin_size:
-        Bin width in seconds.
-    window:
-        (tmin, tmax) interval in seconds.
-
-    Returns
-    -------
-    np.ndarray
-        1D array of bin centers.
-    """
-    tmin, tmax = window
-    if tmin >= tmax:
-        raise FromDataFrameError(
-            f"Invalid window {window}: require tmin < tmax."
-        )
-    edges = np.arange(tmin, tmax + bin_size, bin_size)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    if centers.size == 0:
-        raise FromDataFrameError(
-            f"Window {window} with bin_size={bin_size} produced 0 bins."
-        )
-    return centers
-
-
-def _bin_edges_from_centers(centers: np.ndarray) -> Tuple[np.ndarray, float]:
-    """Compute histogram bin edges (and dt) from uniformly-spaced bin centers.
-
-    Parameters
-    ----------
-    centers:
-        1D array of uniformly spaced bin centers.
-
-    Returns
-    -------
-    (edges, dt):
-        edges is a 1D array of length len(centers)+1, dt is the bin width.
-    """
-    centers = np.asarray(centers, dtype=float)
+def _infer_window_from_time(
+    time: np.ndarray, *, bin_size: float
+) -> Tuple[np.ndarray, Tuple[float, float]]:
+    centers = np.asarray(time, dtype=float)
     if centers.ndim != 1 or centers.size < 2:
         raise FromDataFrameError(
             "time must be a 1D array with at least 2 points."
@@ -319,8 +280,12 @@ def _bin_edges_from_centers(centers: np.ndarray) -> Tuple[np.ndarray, float]:
         raise FromDataFrameError(
             "time vector must be uniformly spaced for binning."
         )
-    edges = np.concatenate([centers - dt / 2, [centers[-1] + dt / 2]])
-    return edges, dt
+    if not np.isclose(dt, bin_size):
+        raise FromDataFrameError(
+            "time spacing must match bin_size when time is provided."
+        )
+    window = (centers[0] - dt / 2, centers[-1] + dt / 2)
+    return centers, window
 
 
 def _build_spikes_units_only(
@@ -372,6 +337,7 @@ def _build_spikes_units_only(
     for c in unit_coords:
         da = da.assign_coords({c: (C.unit, units_df[c].to_numpy())})
 
+    da.attrs[C.attr_valid_intervals] = [_infer_valid_interval(da)]
     return da
 
 
@@ -402,14 +368,17 @@ def _build_spikes_with_trials(
         raise FromDataFrameError(
             f"units_df must contain {spike_times_col!r} column."
         )
-    if (
-        trial_start_col not in trials_df.columns
-        or trial_end_col not in trials_df.columns
-    ):
+    if trial_start_col not in trials_df.columns:
         raise FromDataFrameError(
-            f"trials_df must contain trial_start_col={trial_start_col!r} and "
-            f"trial_end_col={trial_end_col!r}."
+            f"trials_df must contain trial_start_col={trial_start_col!r}."
         )
+    if trial_end_col not in trials_df.columns:
+        if trial_end_col == C.trial_end_col and "stop_time" in trials_df.columns:
+            trial_end_col = "stop_time"
+        else:
+            raise FromDataFrameError(
+                f"trials_df must contain trial_end_col={trial_end_col!r}."
+            )
 
     unit_ids = _get_ids(units_df, unit_id_col, "unit")
     trial_ids = _get_ids(trials_df, trial_id_col, "trial")
@@ -445,70 +414,69 @@ def _build_spikes_with_trials(
             )
         anchor_name = align_to
 
-    # Determine dense time axis if needed
-    centers: Optional[np.ndarray]
+    n_units = len(units_df)
+    n_trials = len(trials_df)
+
+    # Build ragged spikes in session time for each trial, then align via ops.align
+    out = np.empty((n_units, n_trials), dtype=object)
+    for ui in range(n_units):
+        spk_sess = _ensure_1d_float_array(
+            units_df.iloc[ui][spike_times_col],
+            ctx=f"unit {ui} spike_times",
+        )
+
+        lo = np.searchsorted(spk_sess, t_start, side="left")
+        hi = np.searchsorted(spk_sess, t_end, side="right")
+        out[ui, :] = [spk_sess[l:h] for l, h in zip(lo, hi)]
+
+    da_session = xr.DataArray(
+        out,
+        dims=(C.unit, C.trial),
+        coords={C.unit: unit_ids, C.trial: trial_ids},
+        name="spikes",
+    )
+
+    events = xr.DataArray(
+        anchor,
+        dims=(C.trial,),
+        coords={C.trial: trial_ids},
+    ).expand_dims({C.event: np.asarray([anchor_name], dtype=object)})
+
+    rel_start = t_start - anchor
+    rel_end = t_end - anchor
+    window_all = (float(rel_start.min()), float(rel_end.max()))
+    window_use = window if window is not None else window_all
+
     if bin_size is None:
-        centers = None
+        da = ops_align(
+            da_session, events=events, to=anchor_name, window=window_use
+        )
+        da.attrs[C.attr_kind] = "spikes_ragged"
     else:
         if time is not None:
-            centers = np.asarray(time, dtype=float)
+            centers, window_use = _infer_window_from_time(
+                time, bin_size=bin_size
+            )
         else:
             if window is None:
                 raise FromDataFrameError(
                     "bin_size specified but window is None."
                 )
-            centers = _make_time_centers(bin_size, window)
+            window_use = window
+            centers = None
 
-    n_units = len(units_df)
-    n_trials = len(trials_df)
-
-    if centers is None:
-        out = np.empty((n_units, n_trials), dtype=object)
-        for ui in range(n_units):
-            spk_sess = _ensure_1d_float_array(
-                units_df.iloc[ui][spike_times_col],
-                ctx=f"unit {ui} spike_times",
-            )
-
-            # Vectorized bounds -> indices for all trials (O(n_trials log n_spikes))
-            lo = np.searchsorted(spk_sess, t_start, side="left")
-            hi = np.searchsorted(
-                spk_sess, t_end, side="right"
-            )  # inclusive of t_end
-
-            # Ragged extraction (must create one object per trial)
-            out[ui, :] = [spk_sess[l:h] - a for l, h, a in zip(lo, hi, anchor)]
-
-        da = xr.DataArray(
-            out,
-            dims=(C.unit, C.trial),
-            coords={C.unit: unit_ids, C.trial: trial_ids},
-            name="spikes",
+        aligned = ops_align(
+            da_session, events=events, to=anchor_name, window=window_use
         )
-        da.attrs[C.attr_kind] = "spikes_ragged"
-    else:
-        edges, dt = _bin_edges_from_centers(centers)
-        out = np.zeros((n_units, n_trials, len(centers)), dtype=float)
-
-        for ui in range(n_units):
-            spk_sess = _ensure_1d_float_array(
-                units_df.iloc[ui][spike_times_col],
-                ctx=f"unit {ui} spike_times",
-            )
-            for ti in range(n_trials):
-                lo = np.searchsorted(spk_sess, t_start[ti], side="left")
-                hi = np.searchsorted(spk_sess, t_end[ti], side="right")
-                rel = spk_sess[lo:hi] - anchor[ti]
-                counts, _ = np.histogram(rel, bins=edges)
-                out[ui, ti, :] = counts / dt  # rate (Hz)
-
-        da = xr.DataArray(
-            out,
-            dims=(C.unit, C.trial, C.time),
-            coords={C.unit: unit_ids, C.trial: trial_ids, C.time: centers},
-            name="spikes",
+        da = ops_bin(
+            aligned,
+            dt=bin_size,
+            tlim=window_use,
+            output="rate",
+            time_unit=time_unit,
         )
-        da.attrs[C.attr_kind] = "binned"
+        if centers is not None:
+            da = da.assign_coords({C.time: centers})
 
     # Attach metadata as coords
     if unit_coords is None:
@@ -540,6 +508,24 @@ def _build_spikes_with_trials(
     return da
 
 
+def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
+    tmin = np.inf
+    tmax = -np.inf
+    for x in da.data.ravel():
+        if x is None:
+            continue
+        arr = np.asarray(x, dtype=float)
+        if arr.size == 0:
+            continue
+        tmin = min(tmin, float(arr.min()))
+        tmax = max(tmax, float(arr.max()))
+    if not np.isfinite(tmin) or not np.isfinite(tmax):
+        raise FromDataFrameError("Cannot infer valid interval from empty spikes.")
+    if tmin == tmax:
+        tmax = tmin + 1e-6
+    return tmin, tmax
+
+
 def _looks_like_units_df(df: pd.DataFrame, spike_times_col: str) -> bool:
     """Heuristic check for whether a DataFrame looks like a units/spikes table."""
     return spike_times_col in df.columns
@@ -554,10 +540,10 @@ def from_dataframe(
     unit_id_col: Optional[str] = None,
     trial_id_col: Optional[str] = None,
     # Spikes schema
-    spike_times_col: str = "spike_times",
+    spike_times_col: str = C.spike_times_col,
     # Trials schema for segmentation
-    trial_start_col: str = "trial_start",
-    trial_end_col: str = "trial_end",
+    trial_start_col: str = C.trial_start_col,
+    trial_end_col: str = C.trial_end_col,
     align_to: Optional[str] = None,  # anchor per trial; default trial_start
     # Events schema (only used when trials_df is the ONLY df passed)
     event_cols: Optional[Dict[str, str]] = None,
