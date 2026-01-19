@@ -65,13 +65,13 @@ class EphysDataArrayAccessor:
     Public surface area (intentionally small):
       - da.ephys.validate()
       - da.ephys.align(events, to, window)
-      - da.ephys.bin(...)      [stub for now]
-      - da.ephys.smooth(...)   [stub for now]
-      - da.ephys.baseline(...) [stub for now]
-      - da.ephys.normalize(...) [stub for now]
-      - da.ephys.psth(...)     [stub for now]
-      - da.ephys.reduce(...)   [stub for now]
-      - da.ephys.plot.<...>    [optional accessor, stub for now]
+      - da.ephys.bin(...)
+      - da.ephys.smooth(...)
+      - da.ephys.baseline(...)
+      - da.ephys.normalize(...)
+      - da.ephys.psth(...)
+      - da.ephys.reduce(...)
+      - da.ephys.plot.<...>
     """
 
     def __init__(self, xarray_obj: xr.DataArray):
@@ -90,7 +90,7 @@ class EphysDataArrayAccessor:
             "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
             "  - da.ephys.normalize(dim='trial', method='zscore')\n"
             "  - da.ephys.psth(dim='trial', reduce='mean')\n"
-            "  - da.ephys.reduce(method='pca', dim='unit', n=10, stack=('trial','time'))\n"
+            "  - da.ephys.reduce(method='pca', dim='unit', n_components=10, stack=('trial','time'))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
         )
 
@@ -135,7 +135,6 @@ class EphysDataArrayAccessor:
         validate(self._obj)  # friendly errors early
         return _align(self._obj, events=events, to=to, window=window)
 
-    # --- stubs below: you’ll fill these in next ---
     def bin(
         self,
         dt: float,
@@ -161,7 +160,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        Binning preserves compatible coordinates and updates ephys attrs.
         """
         return _bin(
             self._obj, dt=dt, tlim=tlim, output=output, time_unit=time_unit
@@ -180,7 +179,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        Supports gaussian or boxcar smoothing over a single dimension.
         """
         return _smooth(
             self._obj,
@@ -202,7 +201,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        Applies subtract/divide/zscore baselining over a time window.
         """
         return _baseline(self._obj, window=window, dim=dim, mode=mode)
 
@@ -216,7 +215,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        Zero-variance slices are set to 0 to avoid NaNs.
         """
         return _normalize(self._obj, dim=dim, method=method)
 
@@ -231,7 +230,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        If keep_trials=True, includes the trial-wise data alongside summary.
         """
         return _psth(
             self._obj, dim=dim, reduce=reduce, keep_trials=keep_trials
@@ -242,7 +241,7 @@ class EphysDataArrayAccessor:
 
         Notes
         -----
-        This is a stub in the current refactor.
+        Methods include PCA variants, dPCA, and supervised linear reductions.
         """
         return _reduce(self._obj, *args, **kwargs)
 

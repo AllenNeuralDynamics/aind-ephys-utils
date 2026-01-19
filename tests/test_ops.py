@@ -69,7 +69,7 @@ class OpsTest(unittest.TestCase):
             dims=("trial", "unit"),
             coords={"trial": [0, 1, 2], "unit": [0, 1]},
         )
-        out = reduce(da, method="pca", dim="unit", n=1, stack=("trial",))
+        out = reduce(da, method="pca", dim="unit", n_components=1, stack=("trial",))
         self.assertIn("component", out.dims)
         self.assertIn("trial", out.dims)
         self.assertEqual(out.sizes["component"], 1)
