@@ -18,7 +18,7 @@ Helpful methods for exploring *in vivo* electrophysiology data.
    :maxdepth: 2
    :caption: Documentation
 
-   modules
+   api/modules
 
 
 * :ref:`genindex`
@@ -39,4 +39,3 @@ Functions added to this library should try to adhere to the following guidelines
 - Their primary inputs/output are numpy :code:`ndarrays`, pandas :code:`DataFrames`, or xarray :code:`DataArrays`. The analysis code shouldn't depend on any library-specific Python classes.
 - They have minimal external dependencies. Ideally the library will only require **xarray** (which itself depends on **numpy** and **pandas**), **scipy**, and **scikit-learn**, and perhaps a few other packages.
 - They have a variety of use cases. Project-specific code should live in Code Ocean capsules, or eventually separate libraries.
-
