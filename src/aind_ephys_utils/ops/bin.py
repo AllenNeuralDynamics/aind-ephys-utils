@@ -58,11 +58,15 @@ def bin(
     if tmin >= tmax:
         raise ValueError(f"tlim must be (min,max) with min < max, got {tlim}.")
 
-    edges = np.arange(tmin, tmax + dt, dt, dtype=float)
-    if edges.size < 2:
-        edges = np.asarray([tmin, tmin + dt], dtype=float)
+    ratio = (tmax - tmin) / dt
+    if np.isclose(ratio, round(ratio)):
+        n_bins = int(round(ratio))
+    else:
+        n_bins = int(np.ceil(ratio))
+    if n_bins < 1:
+        n_bins = 1
+    edges = tmin + dt * np.arange(n_bins + 1, dtype=float)
     centers = 0.5 * (edges[:-1] + edges[1:])
-    n_bins = centers.size
 
     output = output.lower()
     if output not in ("rate", "count"):
@@ -73,8 +77,21 @@ def bin(
 
     if has_trial and has_unit:
         data = _bin_trial_unit(da, edges)
-        dims = (C.trial, C.unit, C.time)
-        coords = {C.trial: da[C.trial], C.unit: da[C.unit], C.time: centers}
+        if da.dims.index(C.trial) < da.dims.index(C.unit):
+            dims = (C.trial, C.unit, C.time)
+            coords = {
+                C.trial: da[C.trial],
+                C.unit: da[C.unit],
+                C.time: centers,
+            }
+        else:
+            data = np.transpose(data, (1, 0, 2))
+            dims = (C.unit, C.trial, C.time)
+            coords = {
+                C.unit: da[C.unit],
+                C.trial: da[C.trial],
+                C.time: centers,
+            }
     elif has_unit:
         data = _bin_unit(da, edges)
         dims = (C.unit, C.time)
@@ -105,6 +122,7 @@ def bin(
 
 
 def _infer_tlim(da: xr.DataArray) -> Tuple[float, float]:
+    """Infer (tmin, tmax) from ragged spikes."""
     tmin = np.inf
     tmax = -np.inf
     for x in da.data.ravel():
@@ -123,6 +141,7 @@ def _infer_tlim(da: xr.DataArray) -> Tuple[float, float]:
 
 
 def _bin_trial_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
+    """Bin spikes for (trial, unit) ragged input."""
     da_tu = da.transpose(C.trial, C.unit)
     n_trials, n_units = da_tu.shape
     n_bins = len(edges) - 1
@@ -136,6 +155,7 @@ def _bin_trial_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
 
 
 def _bin_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
+    """Bin spikes for (unit,) ragged input."""
     da_u = da.transpose(C.unit)
     n_units = da_u.shape[0]
     n_bins = len(edges) - 1
@@ -148,6 +168,7 @@ def _bin_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
 
 
 def _bin_trial(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
+    """Bin spikes for (trial,) ragged input."""
     da_t = da.transpose(C.trial)
     n_trials = da_t.shape[0]
     n_bins = len(edges) - 1
@@ -160,6 +181,7 @@ def _bin_trial(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
 
 
 def _ensure_1d_float_array(x: object) -> np.ndarray:
+    """Coerce an entry to a 1D float array of spike times."""
     if x is None:
         return np.asarray([], dtype=float)
     arr = np.asarray(x, dtype=float)

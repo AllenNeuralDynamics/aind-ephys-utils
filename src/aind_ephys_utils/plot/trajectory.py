@@ -123,6 +123,7 @@ def trajectory(
 def _group_trials(
     da: xr.DataArray, *, group_by: Optional[Union[str, Sequence[str]]]
 ) -> list[Tuple[Optional[str], xr.DataArray]]:
+    """Split a DataArray into trial groups by one or more coords."""
     if group_by is None:
         return [(None, da)]
     if isinstance(group_by, str):
@@ -151,6 +152,7 @@ def _group_trials(
 def _resolve_colors(
     color: Optional[str], n: int
 ) -> Sequence[Optional[str]]:
+    """Resolve a list of colors for grouped plots."""
     if n <= 1:
         return [color]
     cmap = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])

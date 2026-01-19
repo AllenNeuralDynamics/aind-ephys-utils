@@ -270,6 +270,7 @@ def _build_events(
 def _infer_window_from_time(
     time: np.ndarray, *, bin_size: float
 ) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """Validate time centers and derive the corresponding binning window."""
     centers = np.asarray(time, dtype=float)
     if centers.ndim != 1 or centers.size < 2:
         raise FromDataFrameError(
@@ -509,6 +510,7 @@ def _build_spikes_with_trials(
 
 
 def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
+    """Infer a (tmin, tmax) interval from ragged spike entries."""
     tmin = np.inf
     tmax = -np.inf
     for x in da.data.ravel():

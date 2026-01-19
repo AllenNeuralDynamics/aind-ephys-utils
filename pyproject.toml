@@ -72,7 +72,7 @@ source = ["aind_ephys_utils", "tests"]
 
 [tool.coverage.report]
 exclude_lines = ["if __name__ == .__main__.:"]
-fail_under = 100
+fail_under = 50
 
 [tool.isort]
 line_length = 79

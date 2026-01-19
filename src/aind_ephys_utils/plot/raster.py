@@ -153,6 +153,7 @@ def raster(
 
 
 def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
+    """Convert ragged entries to a list of 1D float arrays."""
     out: list[np.ndarray] = []
     for x in values:
         if x is None:
@@ -170,6 +171,7 @@ def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
 def _group_trials(
     da: xr.DataArray, *, group_by: Optional[Union[str, Sequence[str]]]
 ) -> list[Tuple[Optional[str], xr.DataArray]]:
+    """Split a DataArray into trial groups by one or more coords."""
     if group_by is None:
         return [(None, da)]
     if isinstance(group_by, str):
@@ -196,6 +198,7 @@ def _group_trials(
 
 
 def _resolve_colors(color: str, n: int) -> Iterable[str]:
+    """Resolve a list of colors for grouped plots."""
     if n <= 1:
         return [color]
     cmap = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])

@@ -210,6 +210,7 @@ def reduce(
 def _feature_dims(
     dims: Sequence[str], sample_dims: Sequence[str], dim: Optional[str]
 ) -> Tuple[str, ...]:
+    """Resolve feature dimensions given sample dims and optional preferred dim."""
     feature_dims = [d for d in dims if d not in sample_dims]
     if dim is not None:
         if dim not in feature_dims:
@@ -223,6 +224,7 @@ def _feature_dims(
 def _stack_for_pca(
     da: xr.DataArray, sample_dims: Sequence[str], feature_dims: Sequence[str]
 ) -> xr.DataArray:
+    """Stack sample/feature dims for PCA-style linear algebra."""
     if not sample_dims:
         raise ValueError("Need at least one sample dimension for PCA.")
     if not feature_dims:
@@ -249,6 +251,7 @@ def _reduce_dpca(
     time_dim: str,
     condition_dims: Optional[Tuple[str, ...]],
 ) -> xr.Dataset:
+    """Minimal dPCA implementation using marginal PCA per factor subset."""
     if condition_dims is None or len(condition_dims) == 0:
         raise ValueError("condition_dims is required for method='dpca'.")
     if trial_dim not in da.dims:
@@ -308,6 +311,7 @@ def _reduce_supervised(
     regularization: Optional[float],
     cv: Optional[int],
 ) -> xr.Dataset:
+    """Supervised linear reductions (coding direction, logistic, lda, rrr)."""
     if cv is not None:
         raise NotImplementedError("cv is not implemented for supervised methods.")
     if dim is None:
@@ -487,6 +491,7 @@ def _reduce_supervised(
 def _condition_mean(
     da: xr.DataArray, *, trial_dim: str, condition_dims: Sequence[str]
 ) -> xr.DataArray:
+    """Compute condition means across trials."""
     for c in condition_dims:
         if c not in da.coords:
             raise ValueError(f"condition coord {c!r} not found in DataArray.")
@@ -503,6 +508,7 @@ def _condition_mean(
 
 
 def _marginal_label(factors: Sequence[str], *, time_dim: str) -> str:
+    """Build a readable marginalization label."""
     parts = ["time" if f == time_dim else str(f) for f in factors]
     return "_".join(parts)
 
@@ -510,6 +516,7 @@ def _marginal_label(factors: Sequence[str], *, time_dim: str) -> str:
 def _marginalize(
     da: xr.DataArray, *, factor_dims: Sequence[str]
 ) -> Tuple[xr.DataArray, Dict[Tuple[str, ...], xr.DataArray]]:
+    """ANOVA-style marginalization over factor subsets."""
     grand = da.mean(dim=list(factor_dims), keep_attrs=True)
     marginals: Dict[Tuple[str, ...], xr.DataArray] = {}
     subsets = _nonempty_subsets(list(factor_dims))
@@ -526,6 +533,7 @@ def _marginalize(
 def _pca_marginal(
     da: xr.DataArray, *, feature_dim: str, n_components: int
 ) -> Tuple[xr.DataArray, xr.DataArray]:
+    """PCA for a single marginalization."""
     sample_dims = [d for d in da.dims if d != feature_dim]
     da_stack = _stack_for_pca(da, sample_dims, [feature_dim])
     X = np.asarray(da_stack.data)
@@ -549,6 +557,7 @@ def _pca_marginal(
 
 
 def _nonempty_subsets(items: Sequence[str]) -> Sequence[Tuple[str, ...]]:
+    """Return all non-empty subsets of items."""
     out: list[Tuple[str, ...]] = []
     n = len(items)
     for k in range(1, n + 1):
@@ -558,6 +567,7 @@ def _nonempty_subsets(items: Sequence[str]) -> Sequence[Tuple[str, ...]]:
 
 
 def _proper_subsets(items: Sequence[str]) -> Sequence[Tuple[str, ...]]:
+    """Return all proper (non-empty, non-full) subsets."""
     out: list[Tuple[str, ...]] = []
     n = len(items)
     for k in range(1, n):
@@ -569,6 +579,7 @@ def _proper_subsets(items: Sequence[str]) -> Sequence[Tuple[str, ...]]:
 def _stack_labels(
     labels: xr.DataArray, *, sample_dims: Sequence[str], ref: xr.DataArray
 ) -> np.ndarray:
+    """Stack labels to sample axis, broadcasting across missing sample dims."""
     if not isinstance(labels, xr.DataArray):
         raise TypeError("labels must be an xarray.DataArray.")
     missing = [d for d in sample_dims if d not in labels.dims]
@@ -586,12 +597,14 @@ def _stack_labels(
 
 
 def _label_mask(y: np.ndarray) -> np.ndarray:
+    """Mask NaN labels."""
     return ~pd.isna(y)
 
 
 def _stack_targets(
     targets: xr.DataArray, *, sample_dims: Sequence[str]
 ) -> Tuple[np.ndarray, str]:
+    """Stack targets to sample axis."""
     if not isinstance(targets, xr.DataArray):
         raise TypeError("targets must be an xarray.DataArray.")
     missing = [d for d in sample_dims if d not in targets.dims]
@@ -609,6 +622,7 @@ def _stack_targets(
 
 
 def _target_mask(Y: np.ndarray) -> np.ndarray:
+    """Mask rows with NaN targets."""
     return ~np.isnan(Y).any(axis=1)
 
 
@@ -619,6 +633,7 @@ def _scores_to_dataarray(
     component_count: int,
     unstack: bool,
 ) -> xr.DataArray:
+    """Wrap projected scores into a DataArray with sample coords."""
     out = xr.DataArray(
         scores,
         dims=("_sample", "component"),
@@ -640,6 +655,7 @@ def _weights_to_dataarray(
     *,
     component_count: int,
 ) -> xr.DataArray:
+    """Wrap weights into a DataArray with feature coords."""
     if weights.ndim == 1:
         weights = weights[None, :]
     out = xr.DataArray(
@@ -657,6 +673,7 @@ def _weights_to_dataarray(
 def _expand_marginal_dims(
     da: xr.DataArray, *, factor_dims: Sequence[str]
 ) -> xr.DataArray:
+    """Ensure all factor dims exist for concatenation."""
     out = da
     for d in factor_dims:
         if d not in out.dims:
@@ -667,6 +684,7 @@ def _expand_marginal_dims(
 def _window_mask(
     da_stack: xr.DataArray, *, time_dim: str, window: Optional[Tuple[float, float]]
 ) -> Optional[np.ndarray]:
+    """Build a boolean mask for sample times inside the window."""
     if window is None:
         return None
     if time_dim not in da_stack.dims and time_dim not in da_stack["_sample"].dims:
@@ -685,6 +703,7 @@ def _select_projection(
     window_mask: Optional[np.ndarray],
     window_apply: str,
 ) -> Tuple[np.ndarray, xr.DataArray]:
+    """Select which samples to project based on window_apply."""
     if window_apply not in ("fit_only", "fit_and_project"):
         raise ValueError("window_apply must be 'fit_only' or 'fit_and_project'.")
     if window_apply == "fit_and_project" and window_mask is not None:
@@ -693,6 +712,7 @@ def _select_projection(
 
 
 def _orthogonalize_weights(weights: np.ndarray, *, method: str) -> np.ndarray:
+    """Orthogonalize weight vectors."""
     method = method.lower()
     if method == "none":
         return weights
@@ -710,6 +730,7 @@ def _orthogonalize_weights(weights: np.ndarray, *, method: str) -> np.ndarray:
 def _normalize_windows(
     window: Optional[Union[Tuple[float, float], Sequence[Tuple[float, float]]]]
 ) -> Sequence[Optional[Tuple[float, float]]]:
+    """Normalize window input to a list."""
     if window is None:
         return [None]
     if isinstance(window, tuple) and len(window) == 2:
@@ -720,6 +741,7 @@ def _normalize_windows(
 def _normalize_label_sets(
     labels: Optional[Union[xr.DataArray, Dict[str, xr.DataArray]]]
 ) -> Sequence[Tuple[str, xr.DataArray]]:
+    """Normalize labels input to a list of (name, labels) pairs."""
     if labels is None:
         return []
     if isinstance(labels, dict):
@@ -736,6 +758,7 @@ def _assemble_supervised_output(
     unstack: bool,
     da_stack_full: xr.DataArray,
 ) -> xr.Dataset:
+    """Assemble projections/weights across windows or labels."""
     if not mode_entries:
         raise ValueError("No supervised modes were computed.")
 
@@ -750,6 +773,7 @@ def _assemble_supervised_output(
     proj_list = []
 
     def _label_for(entry: Dict[str, object], comp_idx: int) -> str:
+        """Compose a component label for window/label combos."""
         label = str(entry["label"])
         win = entry.get("window")
         if win is not None:

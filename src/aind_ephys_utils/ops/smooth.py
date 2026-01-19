@@ -67,6 +67,7 @@ def smooth(
 
 
 def _infer_dt(values: np.ndarray) -> float:
+    """Infer uniform sampling interval from coordinate values."""
     values = np.asarray(values, dtype=float)
     if values.ndim != 1 or values.size < 2:
         raise ValueError("Need at least two coordinate values to infer dt.")
@@ -86,6 +87,7 @@ def _make_kernel(
     window: Optional[float],
     dt: float,
 ) -> np.ndarray:
+    """Build a 1D smoothing kernel in sample units."""
     method = method.lower()
     if method == "gaussian":
         if sigma is None and window is None:
@@ -119,6 +121,7 @@ def _make_kernel(
 def _convolve_1d(
     y: np.ndarray, *, kernel: np.ndarray, boundary: str
 ) -> np.ndarray:
+    """Convolve a 1D array with padding."""
     if kernel.size == 1:
         return y
     boundary = boundary.lower()
