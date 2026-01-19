@@ -74,22 +74,54 @@ def psth(
         labels.append(label_g if label is None else label)
 
         x = da_plot[C.time].values if C.time in da_plot.coords else None
-        y = da_plot.values
-        if x is None:
-            ax.plot(
-                y, color=c, alpha=alpha, linewidth=linewidth, label=labels[-1]
+        if C.unit in da_plot.dims:
+            unit_vals = list(da_plot[C.unit].values)
+            unit_colors = (
+                [c] * len(unit_vals)
+                if color is not None
+                else _resolve_colors(None, len(unit_vals))
             )
+            for u, cu in zip(unit_vals, unit_colors):
+                y = da_plot.sel({C.unit: u}).values
+                line_label = labels[-1]
+                if line_label is None:
+                    line_label = f"unit={u}"
+                else:
+                    line_label = f"{line_label}, unit={u}"
+                if x is None:
+                    ax.plot(
+                        y,
+                        color=cu,
+                        alpha=alpha,
+                        linewidth=linewidth,
+                        label=line_label,
+                    )
+                else:
+                    ax.plot(
+                        x,
+                        y,
+                        color=cu,
+                        alpha=alpha,
+                        linewidth=linewidth,
+                        label=line_label,
+                    )
         else:
-            ax.plot(
-                x,
-                y,
-                color=c,
-                alpha=alpha,
-                linewidth=linewidth,
-                label=labels[-1],
-            )
+            y = da_plot.values
+            if x is None:
+                ax.plot(
+                    y, color=c, alpha=alpha, linewidth=linewidth, label=labels[-1]
+                )
+            else:
+                ax.plot(
+                    x,
+                    y,
+                    color=c,
+                    alpha=alpha,
+                    linewidth=linewidth,
+                    label=labels[-1],
+                )
 
-    if len(groups) > 1:
+    if len(groups) > 1 or any(C.unit in p.dims for p in psth_list):
         ax.legend(frameon=False)
     time_unit = data.attrs.get(C.attr_time_unit, C.default_time_unit)
     ax.set_xlabel(f"Time ({time_unit})")

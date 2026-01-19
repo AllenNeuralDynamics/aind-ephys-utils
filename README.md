@@ -103,7 +103,7 @@ where scope (optional) describes the packages affected by the code changes and t
 ### Documentation
 To generate the rst files source files for documentation, run
 ```bash
-sphinx-apidoc -o docs/source/api src/aind_ephys_utils
+sphinx-apidoc -f -e -H "API" -o docs/source/api src/aind_ephys_utils
 ```
 Then to create the documentation HTML files, run
 ```bash

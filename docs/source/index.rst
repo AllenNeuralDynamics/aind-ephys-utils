@@ -13,29 +13,60 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
+Installation
+############
+
+.. code-block:: bash
+
+   pip install aind-ephys-utils
+
+Example usage (with NWB)
+##########################
+
+.. code-block:: python
+
+   from aind_ephys_utils.adapters import from_dataframe
+   from pynwb import NWBHDF5IO
+
+   # read the file
+   nwb = NWBHDF5IO('/path/to/file.nwb', 'r').read()
+
+   # load units and trials dataframes
+   units = nwb.units.to_dataframe()
+   trials = nwb.trials.to_dataframe()
+
+   # align all units to all trials in a window
+   spikes = from_dataframe(units, trials, window=(-0.5, 1.0))
+
+   # bin the spikes in 0.01 s intervals and smooth
+   binned = spikes.ephys.bin(0.01).ephys.smooth(sigma=0.05)
+
+   # plot a PSTH
+   ax = binned.ephys.plot.psth()
+
+Next steps
+##########
+
+- :doc:`/getting_started/quickstart`
+- :doc:`/concepts/index`
+- :doc:`/ops/index`
+
+Documentation
+#############
+
 .. toctree::
-   :hidden:
    :maxdepth: 2
-   :caption: Documentation
 
+   getting_started/quickstart
+   concepts/index
+   getting_started/design_principles
+   adapters/index
+   ops/index
+   plot/index
+   tutorials/index
+   getting_started/troubleshooting
+   getting_started/glossary
    api/modules
-
 
 * :ref:`genindex`
 * :ref:`modindex`
-
-Motivation
-##############
-
-This library is intended to encompass a set of versatile, general-purpose methods for transforming and exploring spike trains and local field potential data. It will be developed in parallel to two other Python packages, :code:`aind-ephys-plots` and :code:`aind-ephys-widgets`, but can also be used on its own.
-
-We hope that these libraries will reduce the amount of redundant code written for exploratory analysis performed on high-density electrophysiology data at the Allen Institute for Neural Dynamics. The code will be public from the start, so others are welcome to contribute to the development as well.
-
-Design principles
-##################
-
-Functions added to this library should try to adhere to the following guidelines:
-
-- Their primary inputs/output are numpy :code:`ndarrays`, pandas :code:`DataFrames`, or xarray :code:`DataArrays`. The analysis code shouldn't depend on any library-specific Python classes.
-- They have minimal external dependencies. Ideally the library will only require **xarray** (which itself depends on **numpy** and **pandas**), **scipy**, and **scikit-learn**, and perhaps a few other packages.
-- They have a variety of use cases. Project-specific code should live in Code Ocean capsules, or eventually separate libraries.

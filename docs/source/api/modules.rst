@@ -1,5 +1,5 @@
-aind_ephys_utils
-================
+API
+===
 
 .. toctree::
    :maxdepth: 4
