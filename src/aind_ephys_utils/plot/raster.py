@@ -1,8 +1,4 @@
-"""Raster plot for ragged spike times.
-
-The main entry point is `raster`, which visualizes per-trial spike times using
-matplotlib.
-"""
+"""Raster plot helpers for ragged spike times."""
 
 from __future__ import annotations
 
@@ -12,200 +8,197 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-
-class RasterPlotError(ValueError):
-    """Raised when raster plot inputs are invalid or inconsistent."""
-
-    pass
-
-
-def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
-    """
-    Convert an object array (trial,) of spike arrays into a list of 1D float arrays.
-    """
-    out: list[np.ndarray] = []
-    for x in values:
-        if x is None:
-            out.append(np.asarray([], dtype=float))
-        else:
-            a = np.asarray(x, dtype=float)
-            if a.ndim != 1:
-                raise RasterPlotError(
-                    f"Expected 1D spike arrays, got shape {a.shape}."
-                )
-            out.append(a)
-    return out
+from ..core.conventions import C
 
 
 def raster(
     spikes: xr.DataArray,
     *,
-    unit: Optional[Union[int, str]] = None,
-    units: Optional[Sequence[Union[int, str]]] = None,
-    trials: Optional[Sequence[Union[int, str]]] = None,
-    sort_by: Optional[str] = None,
-    sort_ascending: bool = True,
-    tlim: Optional[Tuple[float, float]] = None,
+    group_by: Optional[Union[str, Sequence[str]]] = None,
+    tlim: Optional[tuple[float, float]] = None,
     ax: Optional[plt.Axes] = None,
     color: str = "k",
     linewidth: float = 0.8,
     alpha: float = 1.0,
     rasterized: bool = True,
     show_ylabel: bool = True,
-    unit_gap: int = 6,
+    unit_gap: int = 3,
 ) -> plt.Axes:
     """
-    Raster plot for ragged spike times.
+    Raster plot for ragged spike DataArrays.
 
     Parameters
     ----------
     spikes:
-        Ragged spike DataArray. Expected dtype=object.
-        Typical dims: ("unit","trial") with each entry a 1D array of spike times.
-        Also supports a pre-selected ("trial",) object DataArray for a single unit.
-    unit:
-        Single unit id/label to select (if spikes has a 'unit' dimension).
-    units:
-        Multiple unit ids/labels to plot stacked (each unit's trials stacked).
-        If provided, overrides `unit`.
-    trials:
-        Optional subset/order of trial ids/labels (applied after sorting).
-    sort_by:
-        Name of a trial coordinate to sort trials by (e.g. "rt", "choice", "reward").
-        Sorting happens within each unit.
-    sort_ascending:
-        Sort direction for sort_by.
+        Ragged spike DataArray. Expected dtype=object with a trial dimension.
+        Selection of units/trials should be done upstream.
+    group_by:
+        Optional trial coord(s) to split and color trials by condition.
     tlim:
-        (tmin, tmax) x-limits; also filters spikes to this range for speed.
+        Optional (tmin, tmax) for filtering and x-limits.
     ax:
         Matplotlib Axes to draw on; created if None.
     color, linewidth, alpha:
         Styling for tick marks.
     rasterized:
-        If True, rasterize the tick artists (useful for large figures / PDFs).
+        If True, rasterize artists for large figures.
     show_ylabel:
         If True, label y-axis as "trial".
     unit_gap:
-        Extra blank rows between units when plotting multiple units.
+        Extra blank rows between units when stacking multiple units.
 
     Returns
     -------
-    ax:
+    plt.Axes
         The matplotlib Axes.
     """
+    if spikes.dtype != object:
+        raise ValueError("raster expects a ragged spike DataArray with dtype=object.")
+    if C.trial not in spikes.dims:
+        if C.unit in spikes.dims:
+            spikes = spikes.expand_dims({C.trial: [0]}).transpose(
+                C.trial, C.unit
+            )
+            ylabel = C.unit
+        else:
+            spikes = spikes.expand_dims({C.trial: [0]})
+            ylabel = C.trial
+    else:
+        ylabel = C.trial
+    extra_dims = set(spikes.dims) - {C.trial, C.unit}
+    if extra_dims:
+        raise ValueError(
+            f"raster expects only a '{C.trial}' dimension; found {extra_dims}."
+        )
+
     if ax is None:
         _, ax = plt.subplots()
 
-    if spikes.dtype != object:
-        raise RasterPlotError(
-            f"raster expects a ragged spike DataArray with dtype=object; got {spikes.dtype!r}."
-        )
-
-    # Normalize to a list of per-unit DataArrays with dims ("trial",)
-    per_unit: list[Tuple[str, xr.DataArray]] = []
-
-    if "unit" in spikes.dims:
-        if units is not None:
-            for u in units:
-                da_u = spikes.sel(unit=u)
-                if "trial" not in da_u.dims:
-                    raise RasterPlotError(
-                        "Selected unit did not yield a ('trial',) DataArray."
-                    )
-                per_unit.append((str(u), da_u))
-        else:
-            if unit is None:
-                if spikes.sizes.get("unit", 0) == 1:
-                    u0 = spikes["unit"].values[0]
-                    da_u = spikes.isel(unit=0)
-                    per_unit.append((str(u0), da_u))
-                else:
-                    raise RasterPlotError(
-                        "spikes has a 'unit' dimension with multiple units; "
-                        "please specify unit=... or units=[...]."
-                    )
-            else:
-                da_u = spikes.sel(unit=unit)
-                per_unit.append((str(unit), da_u))
+    if spikes.sizes.get(C.trial, 0) <= 1:
+        unit_gap = 0
+        show_unit_labels = False
     else:
-        # assume already ("trial",)
-        if "trial" not in spikes.dims:
-            raise RasterPlotError(
-                "Expected spikes dims to include ('unit','trial') or be pre-selected to ('trial',)."
+        show_unit_labels = True
+    y0 = 0
+    per_unit = []
+    if C.unit in spikes.dims:
+        for u in spikes[C.unit].values:
+            per_unit.append(spikes.sel({C.unit: u}))
+    else:
+        per_unit.append(spikes)
+
+    unit_centers = []
+    unit_labels = []
+    for ui, da_u in enumerate(per_unit):
+        groups = _group_trials(da_u, group_by=group_by)
+        colors = _resolve_colors(color, len(groups))
+        unit_start = y0
+
+        for (label, da), c in zip(groups, colors):
+            seq = _as_list_of_1d_arrays(np.asarray(da.values, dtype=object))
+            if tlim is not None:
+                tmin, tmax = tlim
+                seq = [s[(s >= tmin) & (s <= tmax)] if s.size else s for s in seq]
+
+            lineoffsets = np.arange(y0, y0 + len(seq))
+            artists = ax.eventplot(
+                seq,
+                lineoffsets=lineoffsets,
+                linelengths=0.8,
+                colors=c,
+                linewidths=linewidth,
+                alpha=alpha,
+                orientation="horizontal",
             )
-        per_unit.append(("unit", spikes))
+            if rasterized:
+                for a in artists:
+                    try:
+                        a.set_rasterized(True)
+                    except Exception:
+                        pass
 
-    y0 = 0  # running y offset for stacked units
-
-    for unit_label, da_u in per_unit:
-        da = da_u
-
-        # subset trials
-        if trials is not None:
-            da = da.sel(trial=list(trials))
-
-        # sort trials by a trial coord
-        if sort_by is not None:
-            if sort_by not in da.coords:
-                raise RasterPlotError(
-                    f"sort_by={sort_by!r} not found in DataArray coords. "
-                    f"Available: {list(da.coords)}"
+            if label is not None and len(groups) > 1:
+                ax.text(
+                    x=ax.get_xlim()[0] if tlim is None else tlim[0],
+                    y=y0 + len(seq) / 2,
+                    s=str(label),
+                    va="center",
+                    ha="right",
+                    fontsize=9,
                 )
-            order = np.argsort(np.asarray(da[sort_by].values))
-            if not sort_ascending:
-                order = order[::-1]
-            da = da.isel(trial=order)
 
-        # Convert to list-of-arrays for matplotlib.eventplot
-        seq = _as_list_of_1d_arrays(np.asarray(da.values, dtype=object))
+            y0 += len(seq)
+        unit_end = y0
+        if show_unit_labels:
+            unit_centers.append((unit_start + unit_end) / 2)
+            if C.unit in spikes.dims:
+                unit_labels.append(str(spikes[C.unit].values[ui]))
+            else:
+                unit_labels.append("unit")
+        y0 += unit_gap if ui < len(per_unit) - 1 else 0
 
-        # Optionally filter by tlim (reduces draw time for very dense spikes)
-        if tlim is not None:
-            tmin, tmax = tlim
-            seq = [s[(s >= tmin) & (s <= tmax)] if s.size else s for s in seq]
-
-        # y positions: one row per trial
-        n_trials = len(seq)
-        lineoffsets = np.arange(y0, y0 + n_trials)
-
-        # eventplot draws each trial as a separate row of tick marks
-        artists = ax.eventplot(
-            seq,
-            lineoffsets=lineoffsets,
-            linelengths=0.8,
-            colors=color,
-            linewidths=linewidth,
-            alpha=alpha,
-            orientation="horizontal",
-        )
-        # rasterize for big plots (PDF friendliness)
-        if rasterized:
-            for a in artists:
-                try:
-                    a.set_rasterized(True)
-                except Exception:
-                    pass
-
-        # optional unit label on the left (only when plotting multiple units)
-        if len(per_unit) > 1:
-            ax.text(
-                x=ax.get_xlim()[0] if tlim is None else tlim[0],
-                y=y0 + n_trials / 2,
-                s=str(unit_label),
-                va="center",
-                ha="right",
-                fontsize=9,
-            )
-
-        y0 += n_trials + unit_gap
-
-    # cosmetics
-    ax.set_xlabel("time")
-    if show_ylabel:
-        ax.set_ylabel("trial")
-    ax.invert_yaxis()  # common raster convention: trial 0 at top
     if tlim is not None:
         ax.set_xlim(tlim)
-    ax.set_ylim(y0 - 1, -1)
-
+    if show_ylabel:
+        if ylabel == C.unit:
+            ax.set_ylabel("Unit")
+        else:
+            ax.set_ylabel("Trial")
+    if show_unit_labels and unit_centers:
+        ax.set_yticks(unit_centers)
+        ax.set_yticklabels(unit_labels)
+    time_unit = spikes.attrs.get(C.attr_time_unit, C.default_time_unit)
+    ax.set_xlabel(f"Time ({time_unit})")
     return ax
+
+
+def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
+    out: list[np.ndarray] = []
+    for x in values:
+        if x is None:
+            out.append(np.asarray([], dtype=float))
+        else:
+            arr = np.asarray(x, dtype=float)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"Expected 1D spike arrays, got shape {arr.shape}."
+                )
+            out.append(arr)
+    return out
+
+
+def _group_trials(
+    da: xr.DataArray, *, group_by: Optional[Union[str, Sequence[str]]]
+) -> list[Tuple[Optional[str], xr.DataArray]]:
+    if group_by is None:
+        return [(None, da)]
+    if isinstance(group_by, str):
+        group_by = [group_by]
+    for g in group_by:
+        if g not in da.coords:
+            raise ValueError(f"group_by coord {g!r} not found in DataArray.")
+    if C.trial not in da.dims:
+        raise ValueError("group_by requires a trial dimension.")
+    if len(group_by) == 1:
+        key = group_by[0]
+        return [(f"{key}={k}", v) for k, v in da.groupby(key)]
+
+    labels = list(zip(*(da[g].values for g in group_by)))
+    group_coord = xr.DataArray(
+        labels, dims=(C.trial,), coords={C.trial: da[C.trial]}
+    )
+    da2 = da.assign_coords(_group=group_coord)
+    out: list[Tuple[Optional[str], xr.DataArray]] = []
+    for key, sub in da2.groupby("_group"):
+        label = ",".join(f"{g}={v}" for g, v in zip(group_by, key))
+        out.append((label, sub))
+    return out
+
+
+def _resolve_colors(color: str, n: int) -> Iterable[str]:
+    if n <= 1:
+        return [color]
+    cmap = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    if not cmap:
+        return [color] * n
+    return [cmap[i % len(cmap)] for i in range(n)]

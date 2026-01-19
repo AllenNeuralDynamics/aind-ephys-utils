@@ -12,6 +12,7 @@ import numpy as np
 import xarray as xr
 from sklearn.decomposition import PCA
 
+from .utils import preserve_coords
 
 def reduce(
     da: xr.DataArray,
@@ -75,4 +76,5 @@ def reduce(
     if unstack:
         out = out.unstack(stacked_dim)
 
+    out = preserve_coords(da, out)
     return out

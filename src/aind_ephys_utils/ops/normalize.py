@@ -6,6 +6,7 @@ from typing import Tuple, Union
 
 import xarray as xr
 
+from .utils import preserve_coords
 
 def normalize(
     da: xr.DataArray,
@@ -54,4 +55,5 @@ def normalize(
         raise ValueError(f"Unknown normalization method {method!r}.")
 
     out.attrs = dict(da.attrs)
+    out = preserve_coords(da, out)
     return out

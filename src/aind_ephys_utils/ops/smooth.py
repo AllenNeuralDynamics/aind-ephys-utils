@@ -8,6 +8,7 @@ import numpy as np
 import xarray as xr
 
 from ..core.conventions import C
+from .utils import preserve_coords
 
 
 def smooth(
@@ -61,6 +62,7 @@ def smooth(
         kwargs={"kernel": kernel, "boundary": boundary},
     )
     out.attrs = dict(da.attrs)
+    out = preserve_coords(da, out)
     return out
 
 

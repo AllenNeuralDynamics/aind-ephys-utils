@@ -6,5 +6,6 @@ canonical spike representations.
 
 from .psth import psth
 from .raster import raster
+from .trajectory import trajectory
 
-__all__ = ["raster", "psth"]
+__all__ = ["raster", "psth", "trajectory"]

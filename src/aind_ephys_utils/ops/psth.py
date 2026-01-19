@@ -6,6 +6,7 @@ import numpy as np
 import xarray as xr
 
 from ..core.conventions import C
+from .utils import preserve_coords
 
 
 def psth(
@@ -41,6 +42,7 @@ def psth(
 
     if not keep_trials:
         summary.attrs = dict(da.attrs)
+        summary = preserve_coords(da, summary)
         return summary
 
     summary_exp = summary.expand_dims({dim: ["__summary__"]})
@@ -49,4 +51,5 @@ def psth(
         da = da.assign_coords({dim: coord})
     out = xr.concat([da, summary_exp], dim=dim)
     out.attrs = dict(da.attrs)
+    out = preserve_coords(da, out)
     return out

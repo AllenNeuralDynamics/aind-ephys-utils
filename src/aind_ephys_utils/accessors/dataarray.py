@@ -22,6 +22,9 @@ from ..ops.normalize import normalize as _normalize
 from ..ops.psth import psth as _psth
 from ..ops.reduce import reduce as _reduce
 from ..ops.smooth import smooth as _smooth
+from ..plot.psth import psth as _plot_psth
+from ..plot.raster import raster as _plot_raster
+from ..plot.trajectory import trajectory as _plot_trajectory
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,25 @@ class _Help:
     def __repr__(self) -> str:
         """Return the help text (so printing the object shows the guide)."""
         return self.text
+
+
+@dataclass(frozen=True)
+class _PlotAccessor:
+    """Plotting helper for the `.ephys` accessor."""
+
+    _obj: xr.DataArray
+
+    def raster(self, *args: Any, **kwargs: Any):
+        """Raster plot helper."""
+        return _plot_raster(self._obj, *args, **kwargs)
+
+    def psth(self, *args: Any, **kwargs: Any):
+        """PSTH plot helper."""
+        return _plot_psth(self._obj, *args, **kwargs)
+
+    def trajectory(self, *args: Any, **kwargs: Any):
+        """Trajectory plot helper."""
+        return _plot_trajectory(self._obj, *args, **kwargs)
 
 
 @xr.register_dataarray_accessor("ephys")
@@ -225,11 +247,12 @@ class EphysDataArrayAccessor:
         return _reduce(self._obj, *args, **kwargs)
 
     def plot(self, *args: Any, **kwargs: Any) -> xr.DataArray:
-        """Plot helper entry point.
+        """Plot helper entry point (sub-accessor)."""
+        raise NotImplementedError(
+            "Use da.ephys.plot.<method>(...) to call plotting helpers."
+        )
 
-        Notes
-        -----
-        This is a stub in the current refactor. Plotting is available as functions
-        under `aind_ephys_utils.plot`.
-        """
-        raise NotImplementedError("da.ephys.plot is not implemented yet.")
+    @property
+    def plot(self) -> _PlotAccessor:  # type: ignore[override]
+        """Plot helper sub-accessor."""
+        return _PlotAccessor(self._obj)

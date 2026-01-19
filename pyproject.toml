@@ -19,7 +19,7 @@ dynamic = ["version"]
 dependencies = [
     'xarray',
     'scikit-learn',
-    'matplotlib'
+    'ipympl'
 ]
 
 [project.optional-dependencies]

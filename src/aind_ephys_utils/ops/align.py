@@ -15,6 +15,7 @@ import xarray as xr
 
 from ..core.conventions import C
 from ..core.validate import infer_kind, validate
+from .utils import preserve_coords
 
 
 class EphysAlignError(ValueError):
@@ -125,6 +126,7 @@ def align(
                 {C.time: out[C.time].values - 0.0}
             )  # explicit no-op placeholder
             out.attrs = dict(da.attrs)
+            out = preserve_coords(da, out)
             out.attrs[C.attr_valid_intervals] = [window]
             return out
 
@@ -140,6 +142,7 @@ def align(
                 {C.time: slice(tmin, tmax)}
             )
             out.attrs = dict(da.attrs)
+            out = preserve_coords(da, out)
             out.attrs[C.attr_valid_intervals] = [window]
             return out
 
@@ -190,6 +193,7 @@ def align(
         )
         # Restore original dim order if needed
         out_da = out_da.transpose(*da.dims)
+        out_da = preserve_coords(da, out_da)
         out_da.attrs[C.attr_valid_intervals] = [window]
 
         return out_da

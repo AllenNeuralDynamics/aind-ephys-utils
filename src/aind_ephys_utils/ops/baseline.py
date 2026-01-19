@@ -7,6 +7,7 @@ from typing import Tuple
 import xarray as xr
 
 from ..core.conventions import C
+from .utils import preserve_coords
 
 
 def baseline(
@@ -55,4 +56,5 @@ def baseline(
         raise ValueError(f"Unknown baseline mode {mode!r}.")
 
     out.attrs = dict(da.attrs)
+    out = preserve_coords(da, out)
     return out

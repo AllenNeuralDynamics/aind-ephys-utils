@@ -8,6 +8,7 @@ import numpy as np
 import xarray as xr
 
 from ..core.conventions import C
+from .utils import preserve_coords
 
 
 def bin(
@@ -95,6 +96,7 @@ def bin(
         name=da.name,
         attrs=dict(da.attrs),
     )
+    out = preserve_coords(da, out)
     out.attrs[C.attr_kind] = "binned"
     out.attrs[C.attr_time_unit] = time_unit
     if tlim is not None:
