@@ -12,7 +12,7 @@ from ..core.conventions import C
 from ..ops.psth import psth as ops_psth
 
 
-def psth(
+def psth(  # noqa: C901
     data: xr.DataArray,
     *,
     group_by: Optional[Union[str, Sequence[str]]] = None,

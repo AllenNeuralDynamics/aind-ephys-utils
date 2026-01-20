@@ -478,7 +478,7 @@ def _build_spikes_with_trials(  # noqa: C901
         da = ops_bin(
             aligned,
             dt=bin_size,
-            tlim=window_use,
+            window=window_use,
             output="rate",
             time_unit=time_unit,
         )

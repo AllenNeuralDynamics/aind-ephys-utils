@@ -14,7 +14,7 @@ from .utils import preserve_coords
 def bin(  # noqa: C901
     da: xr.DataArray,
     dt: float,
-    tlim: Optional[Tuple[float, float]] = None,
+    window: Optional[Tuple[float, float]] = None,
     output: str = "rate",
     time_unit: str = "s",
 ) -> xr.DataArray:
@@ -27,7 +27,7 @@ def bin(  # noqa: C901
         Ragged spike DataArray (typically dims: trial, unit).
     dt:
         Bin width in seconds.
-    tlim:
+    window:
         Optional (tmin, tmax) window to bin.
     output:
         Output type, typically "rate" or "count".
@@ -46,17 +46,19 @@ def bin(  # noqa: C901
             "bin expects only 'trial'/'unit' dimensions for ragged spikes."
         )
 
-    if tlim is None:
-        tlim = da.attrs.get(C.attr_valid_intervals, None)
-        if tlim is not None:
-            tmin, tmax = tlim[0]  # Use first valid interval
+    if window is None:
+        window = da.attrs.get(C.attr_valid_intervals, None)
+        if window is not None:
+            tmin, tmax = window[0]  # Use first valid interval
         else:
             tmin, tmax = _infer_tlim(da)
     else:
-        tmin, tmax = tlim
+        tmin, tmax = window
 
     if tmin >= tmax:
-        raise ValueError(f"tlim must be (min,max) with min < max, got {tlim}.")
+        raise ValueError(
+            f"window must be (min,max) with min < max, got {window}."
+        )
 
     ratio = (tmax - tmin) / dt
     if np.isclose(ratio, round(ratio)):
@@ -118,8 +120,8 @@ def bin(  # noqa: C901
     out = preserve_coords(da, out)
     out.attrs[C.attr_kind] = "binned"
     out.attrs[C.attr_time_unit] = time_unit
-    if tlim is not None:
-        out.attrs[C.attr_valid_intervals] = [tlim]
+    if window is not None:
+        out.attrs[C.attr_valid_intervals] = [window]
     return out
 
 

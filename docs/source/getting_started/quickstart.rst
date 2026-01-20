@@ -6,6 +6,8 @@ This quickstart shows the minimal flow from raw spike times to plots.
 Install
 -------
 
+The library can be installed via ``pip``. It only has three dependencies: ``xarray`` (for core data structures), ``scikit-learn`` (for dimensionality reduction methods), and ``ipympl`` (for interactive plotting).
+
 .. code-block:: bash
 
    pip install aind-ephys-utils
@@ -13,10 +15,11 @@ Install
 Load and convert
 ----------------
 
+To start working with spike data, it needs to be stored in a ``DataArray`` with the correct format. If you already have your spikes and trials in Pandas ``DataFrames`` (e.g., loaded from an NWB file), generating the appropriate data structure is straigtforward:
+
 .. code-block:: python
 
    import pandas as pd
-   import xarray as xr
    from aind_ephys_utils.adapters import from_dataframe
 
    units_df = pd.DataFrame({
@@ -31,18 +34,32 @@ Load and convert
        "start_time": [0.0, 1.0],
        "stop_time": [0.8, 1.8],
        "go_cue_time": [0.2, 1.2],
+       "outcome" : ['hit', 'miss']
    })
 
    spikes = from_dataframe(units_df, trials_df, window=(-0.5, 1.0), bin_size=None)
-   events = from_dataframe(trials_df)
+
+Data filtering and selection
+-----------------------------
+
+Once your data is in the right format, you can use ``xarray`` operations to filter and select data:
+
+.. code-block:: python
+
+   spikes_for_unit = spikes.sel(unit=1) # select unit by ID
+   spikes_for_hits = spikes_for_unit.where(
+        spikes.outcome == 'hit', 
+        drop=True) # filter out miss trials
+
 
 Align, bin, plot
 ----------------
 
+Now you can perform operations (e.g. binning and smoothing) on the output and plot the results. Note that all ``aind-ephys-utils`` methods are available via the ``ephys`` accessor, whereas built-in ``xarray`` methods can be called directly on the ``DataArray``.
+
 .. code-block:: python
 
-   aligned = spikes.ephys.align(events=events, to="go_cue", window=(-0.5, 1.0))
-   binned = aligned.ephys.bin(0.01).ephys.smooth(sigma=0.05)
+   binned = spikes_for_hits.ephys.bin(0.01).ephys.smooth(sigma=0.05)
    ax = binned.ephys.plot.psth()
 
 Next steps

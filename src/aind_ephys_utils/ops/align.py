@@ -28,10 +28,18 @@ def _normalize_events(events: Union[xr.Dataset, xr.DataArray]) -> xr.Dataset:
     """
     Accept:
       - Dataset with var "t" dims (trial, event)
-      - DataArray already representing event times dims (trial, event)
+      - DataArray of event times dims (trial, event)
+      - DataArray of events with dims (trial, event, bound)
     Return a Dataset with events["t"] always present.
     """
     if isinstance(events, xr.DataArray):
+        if "bound" in events.dims:
+            if "start" not in events.coords.get("bound", []):
+                raise EphysAlignError(
+                    "events['bound'] must include 'start' when using "
+                    "(trial, event, bound) representation."
+                )
+            events = events.sel(bound="start")
         return xr.Dataset({C.event_time_var: events})
     if isinstance(events, xr.Dataset):
         if C.event_time_var not in events:

@@ -38,7 +38,7 @@ Example usage (with NWB)
    # align all units to all trials in a window
    spikes = from_dataframe(units, trials, window=(-0.5, 1.0))
 
-   # bin the spikes in 0.01 s intervals and smooth
+   # Use the `ephys` accessor to bin the spikes in 0.01 s intervals and smooth
    binned = spikes.ephys.bin(0.01).ephys.smooth(sigma=0.05)
 
    # plot a PSTH

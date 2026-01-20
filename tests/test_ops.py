@@ -21,7 +21,7 @@ class OpsTest(unittest.TestCase):
             dims=("trial", "unit"),
             coords={"trial": [0], "unit": [0, 1]},
         )
-        binned = bin(spikes, dt=0.1, tlim=(0.0, 0.2), output="count")
+        binned = bin(spikes, dt=0.1, window=(0.0, 0.2), output="count")
         self.assertEqual(binned.dims, ("trial", "unit", "time"))
         self.assertEqual(binned.shape, (1, 2, 2))
         np.testing.assert_array_equal(binned.values[0, 0], [1, 1])

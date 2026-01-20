@@ -18,7 +18,7 @@ class AccessorTest(unittest.TestCase):
             dims=("trial", "unit"),
             coords={"trial": [0], "unit": [0]},
         )
-        binned = spikes.ephys.bin(0.1, tlim=(0.0, 0.3))
+        binned = spikes.ephys.bin(0.1, window=(0.0, 0.3))
         self.assertIn("time", binned.dims)
         plotter = spikes.ephys.plot
         self.assertTrue(hasattr(plotter, "raster"))

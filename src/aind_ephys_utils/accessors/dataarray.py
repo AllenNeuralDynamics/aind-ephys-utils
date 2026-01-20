@@ -139,7 +139,7 @@ class EphysDataArrayAccessor:
     def bin(
         self,
         dt: float,
-        tlim: Optional[Tuple[float, float]] = None,
+        window: Optional[Tuple[float, float]] = None,
         output: str = "rate",
         time_unit: str = "s",
     ) -> xr.DataArray:
@@ -164,7 +164,7 @@ class EphysDataArrayAccessor:
         Binning preserves compatible coordinates and updates ephys attrs.
         """
         return _bin(
-            self._obj, dt=dt, tlim=tlim, output=output, time_unit=time_unit
+            self._obj, dt=dt, window=window, output=output, time_unit=time_unit
         )
 
     def smooth(
