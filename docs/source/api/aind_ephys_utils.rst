@@ -9,10 +9,10 @@ Subpackages
 
    aind_ephys_utils.accessors
    aind_ephys_utils.adapters
-   aind_ephys_utils.core
    aind_ephys_utils.metrics
    aind_ephys_utils.ops
-   aind_ephys_utils.plot
+   aind_ephys_utils.plots
+   aind_ephys_utils.standards
 
 Submodules
 ----------

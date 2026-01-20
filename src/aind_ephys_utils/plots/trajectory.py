@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from ..core.conventions import C
+from ..standards.conventions import C
 
 
 def trajectory(  # noqa: C901

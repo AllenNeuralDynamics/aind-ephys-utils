@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..core.conventions import C
+from ..standards.conventions import C
 
 
 def raster(  # noqa: C901

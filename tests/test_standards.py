@@ -1,11 +1,11 @@
-"""Tests for core validation utilities."""
+"""Tests for standards validation utilities."""
 
 import unittest
 
 import numpy as np
 import xarray as xr
 
-from aind_ephys_utils.core.validate import (
+from aind_ephys_utils.standards.validate import (
     EphysValidationError,
     infer_kind,
     validate,

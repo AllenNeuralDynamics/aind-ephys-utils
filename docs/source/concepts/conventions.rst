@@ -41,4 +41,4 @@ this representation directly and will use the ``"start"`` bound by default.
 Where to find definitions
 -------------------------
 
-All constants are defined in ``aind_ephys_utils.core.conventions``.
+All constants are defined in ``aind_ephys_utils.standards.conventions``.

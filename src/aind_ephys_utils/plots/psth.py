@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..core.conventions import C
+from ..standards.conventions import C
 from ..ops.psth import psth as ops_psth
 
 

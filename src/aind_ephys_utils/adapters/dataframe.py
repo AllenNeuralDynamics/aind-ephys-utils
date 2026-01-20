@@ -18,7 +18,7 @@ Supported patterns
    Segment per-unit session spike times by trial boundaries and express spikes
    in trial time relative to an anchor (by default, the trial start).
 
-The resulting DataArrays are validated by `aind_ephys_utils.core.validate` when
+The resulting DataArrays are validated by `aind_ephys_utils.standards.validate` when
 `validate=True`.
 """
 
@@ -30,8 +30,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from ..core.conventions import C
-from ..core.validate import validate as validate_xarray
+from ..standards.conventions import C
+from ..standards.validate import validate as validate_xarray
 from ..ops.align import align as ops_align
 from ..ops.bin import bin as ops_bin
 

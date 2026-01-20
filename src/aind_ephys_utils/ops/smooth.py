@@ -7,7 +7,7 @@ from typing import Optional
 import numpy as np
 import xarray as xr
 
-from ..core.conventions import C
+from ..standards.conventions import C
 from .utils import preserve_coords
 
 

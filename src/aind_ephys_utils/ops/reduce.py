@@ -16,7 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 
-from ..core.conventions import C
+from ..standards.conventions import C
 from .utils import preserve_coords
 
 

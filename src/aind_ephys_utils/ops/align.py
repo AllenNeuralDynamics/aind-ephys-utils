@@ -13,8 +13,8 @@ from typing import Tuple, Union
 import numpy as np
 import xarray as xr
 
-from ..core.conventions import C
-from ..core.validate import infer_kind, validate
+from ..standards.conventions import C
+from ..standards.validate import infer_kind, validate
 from .utils import preserve_coords
 
 

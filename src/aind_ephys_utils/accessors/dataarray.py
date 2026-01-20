@@ -13,8 +13,8 @@ from typing import Any, Optional, Tuple, Union
 
 import xarray as xr
 
-from ..core.conventions import C
-from ..core.validate import validate
+from ..standards.conventions import C
+from ..standards.validate import validate
 from ..ops.align import align as _align
 from ..ops.baseline import baseline as _baseline
 from ..ops.bin import bin as _bin
@@ -22,9 +22,9 @@ from ..ops.normalize import normalize as _normalize
 from ..ops.psth import psth as _psth
 from ..ops.reduce import reduce as _reduce
 from ..ops.smooth import smooth as _smooth
-from ..plot.psth import psth as _plot_psth
-from ..plot.raster import raster as _plot_raster
-from ..plot.trajectory import trajectory as _plot_trajectory
+from ..plots.psth import psth as _plot_psth
+from ..plots.raster import raster as _plot_raster
+from ..plots.trajectory import trajectory as _plot_trajectory
 
 
 @dataclass(frozen=True)

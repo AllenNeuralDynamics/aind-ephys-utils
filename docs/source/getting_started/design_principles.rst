@@ -16,9 +16,9 @@ Package layers
 --------------
 
 - ``adapters``: convert external data into canonical ``DataArrays``.
-- ``core``: conventions and validation of shapes/metadata.
+- ``standards``: conventions and validation of shapes/metadata.
 - ``ops``: pure, composable operations (no plotting, no I/O).
-- ``plot``: visualization helpers only.
+- ``plots``: visualization helpers only.
 - ``accessors``: ergonomic entry point via ``da.ephys``.
 
 Data model assumptions

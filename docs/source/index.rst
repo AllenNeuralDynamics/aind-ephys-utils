@@ -62,7 +62,7 @@ Documentation
    getting_started/design_principles
    adapters/index
    ops/index
-   plot/index
+   plots/index
    tutorials/index
    getting_started/troubleshooting
    getting_started/glossary
