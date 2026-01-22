@@ -21,6 +21,7 @@ from ..ops.bin import bin as _bin
 from ..ops.normalize import normalize as _normalize
 from ..ops.psth import psth as _psth
 from ..ops.reduce import reduce as _reduce
+from ..ops.restrict import restrict as _restrict
 from ..ops.smooth import smooth as _smooth
 from ..plots.psth import psth as _plot_psth
 from ..plots.raster import raster as _plot_raster
@@ -71,6 +72,7 @@ class EphysDataArrayAccessor:
       - da.ephys.normalize(...)
       - da.ephys.psth(...)
       - da.ephys.reduce(...)
+      - da.ephys.restrict(...)
       - da.ephys.plot.<...>
     """
 
@@ -92,6 +94,7 @@ class EphysDataArrayAccessor:
             "  - da.ephys.psth(dim='trial', reduce='mean')\n"
             "  - da.ephys.reduce(method='pca', dim='unit', n_components=10,\n"
             "    stack=('trial','time'))\n"
+            "  - da.ephys.restrict(window=(-0.5, 1.0))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
         )
 
@@ -171,7 +174,7 @@ class EphysDataArrayAccessor:
         self,
         *,
         dim: str = C.time,
-        method: str = "gaussian",
+        method: str = "boxcar",
         sigma: Optional[float] = None,
         window: Optional[float] = None,
         boundary: str = "reflect",
@@ -245,6 +248,15 @@ class EphysDataArrayAccessor:
         Methods include PCA variants, dPCA, and supervised linear reductions.
         """
         return _reduce(self._obj, *args, **kwargs)
+
+    def restrict(
+        self,
+        *,
+        window: Tuple[float, float],
+        dim: str = C.time,
+    ) -> xr.DataArray:
+        """Restrict to a time window for dense or ragged data."""
+        return _restrict(self._obj, window=window, dim=dim)
 
     @property
     def plot(self) -> _PlotAccessor:  # type: ignore[override]

@@ -10,6 +10,7 @@ from .bin import bin
 from .normalize import normalize
 from .psth import psth
 from .reduce import reduce
+from .restrict import restrict
 from .smooth import smooth
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "normalize",
     "psth",
     "reduce",
+    "restrict",
     "smooth",
 ]

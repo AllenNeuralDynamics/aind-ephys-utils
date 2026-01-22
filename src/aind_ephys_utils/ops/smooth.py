@@ -15,7 +15,7 @@ def smooth(
     da: xr.DataArray,
     *,
     dim: str = C.time,
-    method: str = "gaussian",
+    method: str = "boxcar",
     sigma: Optional[float] = None,
     window: Optional[float] = None,
     boundary: str = "reflect",
@@ -30,7 +30,7 @@ def smooth(
     dim:
         Dimension to smooth (defaults to time).
     method:
-        Smoothing method (e.g. "gaussian").
+        Smoothing method (e.g. "boxcar", "gaussian").
     sigma:
         Gaussian sigma in seconds (optional).
     window:
@@ -50,6 +50,7 @@ def smooth(
         window=window,
         dt=dt,
     )
+    causal = method.lower() == "boxcar"
 
     out = xr.apply_ufunc(
         _convolve_1d,
@@ -59,7 +60,7 @@ def smooth(
         vectorize=True,
         dask="parallelized",
         output_dtypes=[float],
-        kwargs={"kernel": kernel, "boundary": boundary},
+        kwargs={"kernel": kernel, "boundary": boundary, "causal": causal},
     )
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
@@ -119,11 +120,14 @@ def _make_kernel(
 
 
 def _convolve_1d(
-    y: np.ndarray, *, kernel: np.ndarray, boundary: str
+    y: np.ndarray, *, kernel: np.ndarray, boundary: str, causal: bool
 ) -> np.ndarray:
     """Convolve a 1D array with padding."""
     if kernel.size == 1:
         return y
+    if causal:
+        out = np.convolve(y, kernel, mode="full")
+        return out[: y.shape[0]]
     boundary = boundary.lower()
     pad = kernel.size // 2
     if pad == 0:
