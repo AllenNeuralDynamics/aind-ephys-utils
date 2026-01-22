@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,6 +10,7 @@ import xarray as xr
 
 from ..standards.conventions import C
 from ..ops.psth import psth as ops_psth
+from .annotations import add_scale_bars, annotate_events
 
 
 def psth(  # noqa: C901
@@ -20,10 +21,25 @@ def psth(  # noqa: C901
     reduce: str = "mean",
     compute: bool = True,
     ax: Optional[plt.Axes] = None,
+    events: Optional[Union[Sequence[float], np.ndarray, xr.DataArray]] = None,
+    intervals: Optional[
+        Union[Sequence[Tuple[float, float]], np.ndarray, xr.DataArray]
+    ] = None,
+    event_labels: Optional[Union[Sequence[str], Dict[float, str]]] = None,
+    interval_labels: Optional[
+        Union[Sequence[str], Dict[Tuple[float, float], str]]
+    ] = None,
+    event_style: Optional[dict] = None,
+    interval_style: Optional[dict] = None,
     color: Optional[str] = None,
     alpha: float = 1.0,
     linewidth: float = 1.5,
     label: Optional[str] = None,
+    hide_axes: bool = False,
+    x_scale: Optional[float] = None,
+    y_scale: Optional[float] = None,
+    x_scale_text: Optional[str] = None,
+    y_scale_text: Optional[str] = None,
 ) -> tuple[xr.DataArray, Optional[plt.Axes]]:
     """
     Plot a PSTH from a binned/continuous DataArray.
@@ -43,8 +59,30 @@ def psth(  # noqa: C901
         If True, compute the PSTH from data using ops.psth.
     ax:
         Matplotlib Axes to draw on; created if None.
+    events:
+        Optional event times to overlay as vertical lines.
+    intervals:
+        Optional intervals to overlay as shaded regions.
+    event_labels:
+        Optional labels for events (sequence aligned with events or mapping).
+    interval_labels:
+        Optional labels for intervals (sequence aligned with intervals or mapping).
+    event_style:
+        Optional styling dict passed to ``ax.axvline``.
+    interval_style:
+        Optional styling dict passed to ``ax.axvspan``.
     color, alpha, linewidth, label:
         Plot styling options.
+    hide_axes:
+        If True, hide axes and draw scale bars.
+    x_scale:
+        Optional length of x-axis scale bar in data units.
+    y_scale:
+        Optional length of y-axis scale bar in data units.
+    x_scale_text:
+        Optional label text for the x-axis scale bar.
+    y_scale_text:
+        Optional label text for the y-axis scale bar.
 
     Returns
     -------
@@ -126,6 +164,26 @@ def psth(  # noqa: C901
     time_unit = data.attrs.get(C.attr_time_unit, C.default_time_unit)
     ax.set_xlabel(f"Time ({time_unit})")
     ax.set_ylabel("Rate (Hz)")
+    annotate_events(
+        ax=ax,
+        events=events,
+        intervals=intervals,
+        event_labels=event_labels,
+        interval_labels=interval_labels,
+        event_style=event_style,
+        interval_style=interval_style,
+    )
+    if hide_axes:
+        time_unit = data.attrs.get(C.attr_time_unit, C.default_time_unit)
+        add_scale_bars(
+            ax=ax,
+            x_unit=time_unit,
+            y_unit="Hz",
+            x_length=x_scale,
+            y_length=y_scale,
+            x_text=x_scale_text,
+            y_text=y_scale_text,
+        )
 
     if len(psth_list) == 1:
         return psth_list[0], ax
