@@ -7,6 +7,8 @@ Submodules
 .. toctree::
    :maxdepth: 4
 
+   aind_ephys_utils.plots.annotations
+   aind_ephys_utils.plots.colors
    aind_ephys_utils.plots.psth
    aind_ephys_utils.plots.raster
    aind_ephys_utils.plots.trajectory

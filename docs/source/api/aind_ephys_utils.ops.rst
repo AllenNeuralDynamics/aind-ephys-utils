@@ -13,6 +13,7 @@ Submodules
    aind_ephys_utils.ops.normalize
    aind_ephys_utils.ops.psth
    aind_ephys_utils.ops.reduce
+   aind_ephys_utils.ops.restrict
    aind_ephys_utils.ops.smooth
    aind_ephys_utils.ops.utils
 

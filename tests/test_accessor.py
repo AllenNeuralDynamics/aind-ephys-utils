@@ -35,3 +35,13 @@ class AccessorTest(unittest.TestCase):
         )
         self.assertIn("projections", ds)
         self.assertIn("weights", ds)
+
+    def test_restrict_accessor(self) -> None:
+        """Restrict via accessor for dense data."""
+        da = xr.DataArray(
+            np.arange(4, dtype=float),
+            dims=("time",),
+            coords={"time": [0.0, 0.5, 1.0, 1.5]},
+        )
+        out = da.ephys.restrict(window=(0.5, 1.0))
+        np.testing.assert_allclose(out.time.values, [0.5, 1.0])

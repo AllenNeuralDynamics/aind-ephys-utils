@@ -5,7 +5,15 @@ import unittest
 import numpy as np
 import xarray as xr
 
-from aind_ephys_utils.ops import baseline, bin, normalize, psth, reduce, smooth
+from aind_ephys_utils.ops import (
+    baseline,
+    bin,
+    normalize,
+    psth,
+    reduce,
+    restrict,
+    smooth,
+)
 
 
 class OpsTest(unittest.TestCase):
@@ -34,7 +42,7 @@ class OpsTest(unittest.TestCase):
             dims=("time",),
             coords={"time": np.arange(5) * 0.1},
         )
-        out = smooth(da, sigma=0.1)
+        out = smooth(da, method="gaussian", sigma=0.1)
         self.assertEqual(out.shape, da.shape)
         total = float(out.sum())
         self.assertTrue(0.9 < total < 1.2)
@@ -82,3 +90,28 @@ class OpsTest(unittest.TestCase):
         self.assertIn("component", out.dims)
         self.assertIn("trial", out.dims)
         self.assertEqual(out.sizes["component"], 1)
+
+    def test_restrict_dense(self) -> None:
+        """Restrict a dense DataArray to a time window."""
+        da = xr.DataArray(
+            np.arange(6, dtype=float),
+            dims=("time",),
+            coords={"time": np.linspace(0.0, 0.5, 6)},
+        )
+        out = restrict(da, window=(0.2, 0.4))
+        self.assertTrue(out.time.min() >= 0.2)
+        self.assertTrue(out.time.max() <= 0.4)
+
+    def test_restrict_ragged(self) -> None:
+        """Restrict ragged spikes using searchsorted."""
+        data = np.empty((1, 2), dtype=object)
+        data[0, 0] = np.array([0.1, 0.3, 0.6])
+        data[0, 1] = np.array([0.05, 0.2])
+        spikes = xr.DataArray(
+            data=data,
+            dims=("trial", "unit"),
+            coords={"trial": [0], "unit": [0, 1]},
+        )
+        out = restrict(spikes, window=(0.1, 0.4))
+        np.testing.assert_allclose(out.values[0, 0], [0.1, 0.3])
+        np.testing.assert_allclose(out.values[0, 1], [0.2])

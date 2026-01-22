@@ -15,3 +15,4 @@ effects. They preserve compatible coordinates and return ``DataArrays`` or
    normalize
    psth
    reduce
+   restrict
