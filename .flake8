@@ -4,5 +4,6 @@ exclude =
     __pycache__,
     build,
     code
+    notebooks
 max-complexity = 10
 max-line-length = 90

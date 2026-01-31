@@ -17,6 +17,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 
 from ..standards.conventions import C
+from .dpca import dPCA
 from .utils import preserve_coords
 
 
@@ -38,6 +39,7 @@ def reduce(  # noqa: C901
     trial_dim: str = C.trial,
     time_dim: str = C.time,
     condition_dims: Optional[Tuple[str, ...]] = None,
+    trial_average: bool = True,
     labels: Optional[xr.DataArray] = None,
     targets: Optional[xr.DataArray] = None,
     rank: Optional[int] = None,
@@ -57,7 +59,7 @@ def reduce(  # noqa: C901
     dim:
         Dimension to reduce across for methods that operate on a single axis.
     n_components:
-        Number of components to keep (PCA, dPCA, GPFA).
+        Number of components to keep (PCA, dPCA).
     stack:
         Optional dims to stack before reduction (e.g. trial/time).
     unstack:
@@ -81,6 +83,8 @@ def reduce(  # noqa: C901
         Time dimension name.
     condition_dims:
         Condition coordinate(s) used for dPCA marginals.
+    trial_average:
+        If True (default), average across trials before dPCA marginalization.
     labels:
         Labels for supervised methods (coding direction, logistic).
     targets:
@@ -117,6 +121,7 @@ def reduce(  # noqa: C901
             trial_dim=trial_dim,
             time_dim=time_dim,
             condition_dims=condition_dims,
+            trial_average=trial_average,
         )
 
     if method in ("coding_direction", "logistic", "lda", "rrr"):
@@ -250,7 +255,7 @@ def _stack_for_pca(
     return da_stack.transpose("_sample", "_feature")
 
 
-def _reduce_dpca(
+def _reduce_dpca(  # noqa: C901
     da: xr.DataArray,
     *,
     n_components: int,
@@ -258,8 +263,9 @@ def _reduce_dpca(
     trial_dim: str,
     time_dim: str,
     condition_dims: Optional[Tuple[str, ...]],
+    trial_average: bool,
 ) -> xr.Dataset:
-    """Minimal dPCA implementation using marginal PCA per factor subset."""
+    """dPCA implementation using the original solver."""
     if condition_dims is None or len(condition_dims) == 0:
         raise ValueError("condition_dims is required for method='dpca'.")
     if trial_dim not in da.dims:
@@ -274,21 +280,67 @@ def _reduce_dpca(
         else:
             raise ValueError("dim is required for method='dpca'.")
 
-    da_cond = _condition_mean(
-        da, trial_dim=trial_dim, condition_dims=condition_dims
-    )
-    factor_dims = list(condition_dims) + [time_dim]
+    if trial_average:
+        da_cond = _condition_mean(
+            da, trial_dim=trial_dim, condition_dims=condition_dims
+        )
+    else:
+        if trial_dim in da.dims:
+            raise ValueError(
+                "trial_average=False requires data without the trial dimension. "
+                "Average across trials first or set trial_average=True."
+            )
+        missing = [d for d in condition_dims if d not in da.dims]
+        if missing:
+            raise ValueError(
+                "trial_average=False requires condition_dims to be dimensions; "
+                f"missing dims: {missing}."
+            )
+        da_cond = da
 
-    _, marginals = _marginalize(da_cond, factor_dims=factor_dims)
+    factor_dims = list(condition_dims) + [time_dim]
+    missing = [d for d in factor_dims if d not in da_cond.dims]
+    if missing:
+        raise ValueError(f"factor dims {missing} not found in DataArray dims.")
+
+    da_dpca = da_cond.transpose(dim, *factor_dims)
+    X = np.asarray(da_dpca.data)
+    if np.isnan(X).any():
+        X = np.nan_to_num(X, nan=0.0)
+
+    dpca = dPCA(labels=len(factor_dims), n_components=n_components)
+    dpca.fit(X)
+    transformed = dpca.transform(X)
+
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    label_map = {alphabet[i]: factor_dims[i] for i in range(len(factor_dims))}
+
     proj_list = []
     weights_list = []
     labels = []
-
-    for factors, marg in marginals.items():
+    for key in dpca.marginalizations.keys():
+        factors = tuple(label_map[ch] for ch in key)
         label = _marginal_label(factors, time_dim=time_dim)
-        marg_full = _expand_marginal_dims(marg, factor_dims=factor_dims)
-        proj, weights = _pca_marginal(
-            marg_full, feature_dim=dim, n_components=n_components
+        Z = transformed[key]
+        proj = xr.DataArray(
+            Z,
+            dims=("component",) + tuple(factor_dims),
+            coords={
+                "component": np.arange(Z.shape[0]),
+                **{d: da_dpca.coords[d] for d in factor_dims},
+            },
+            name=da.name,
+            attrs=dict(da.attrs),
+        )
+        D = dpca.D[key]
+        weights = xr.DataArray(
+            D.T,
+            dims=("component", dim),
+            coords={
+                "component": np.arange(D.shape[1]),
+                dim: da_dpca.coords[dim],
+            },
+            name="weights",
         )
         proj_list.append(proj)
         weights_list.append(weights)
@@ -549,7 +601,11 @@ def _marginalize(
 
 
 def _pca_marginal(
-    da: xr.DataArray, *, feature_dim: str, n_components: int
+    da: xr.DataArray,
+    *,
+    feature_dim: str,
+    n_components: int,
+    project_da: Optional[xr.DataArray] = None,
 ) -> Tuple[xr.DataArray, xr.DataArray]:
     """PCA for a single marginalization."""
     sample_dims = [d for d in da.dims if d != feature_dim]
@@ -558,18 +614,22 @@ def _pca_marginal(
     if np.isnan(X).any():
         X = np.nan_to_num(X, nan=0.0)
     model = PCA(n_components=n_components)
-    scores = model.fit_transform(X)
-    out = xr.DataArray(
+    model.fit(X)
+    if project_da is None:
+        X_proj = X
+        da_proj = da_stack
+    else:
+        da_proj = _stack_for_pca(project_da, sample_dims, [feature_dim])
+        X_proj = np.asarray(da_proj.data)
+        if np.isnan(X_proj).any():
+            X_proj = np.nan_to_num(X_proj, nan=0.0)
+    scores = X_proj @ model.components_.T
+    out = _scores_to_dataarray(
         scores,
-        dims=("_sample", "component"),
-        coords={
-            "_sample": da_stack["_sample"],
-            "component": np.arange(n_components),
-        },
-        name=da.name,
-        attrs=dict(da.attrs),
-    ).transpose("component", "_sample")
-    out = out.unstack("_sample")
+        da_proj,
+        component_count=n_components,
+        unstack=True,
+    )
     weights = _weights_to_dataarray(
         model.components_, da_stack, component_count=n_components
     )
@@ -693,13 +753,22 @@ def _weights_to_dataarray(
 
 
 def _expand_marginal_dims(
-    da: xr.DataArray, *, factor_dims: Sequence[str]
+    da: xr.DataArray,
+    *,
+    factor_dims: Sequence[str],
+    ref: xr.DataArray,
 ) -> xr.DataArray:
-    """Ensure all factor dims exist for concatenation."""
+    """Ensure all factor dims exist, expanding to full coords."""
     out = da
     for d in factor_dims:
         if d not in out.dims:
-            out = out.expand_dims({d: ["__all__"]})
+            if d in ref.coords:
+                coord = ref.coords[d]
+            elif d in ref.dims:
+                coord = np.arange(ref.sizes[d])
+            else:
+                coord = ["__all__"]
+            out = out.expand_dims({d: coord})
     return out
 
 

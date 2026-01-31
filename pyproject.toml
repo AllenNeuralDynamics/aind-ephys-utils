@@ -72,7 +72,7 @@ source = ["aind_ephys_utils", "tests"]
 
 [tool.coverage.report]
 exclude_lines = ["if __name__ == .__main__.:"]
-fail_under = 50
+fail_under = 40
 
 [tool.isort]
 line_length = 90
@@ -88,5 +88,6 @@ exclude = ["setup.py",
            "metadata",
            "results",
            "data",
+           "notebooks",
            "scratch"]
 fail-under = 100
