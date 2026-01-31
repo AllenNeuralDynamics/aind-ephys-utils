@@ -37,12 +37,16 @@ def _lookup_color(key: Tuple[str, Union[int, str]]) -> str:
     else:
         color = names.get(str(value)) or acronyms.get(str(value))
     if color is None:
-        raise ValueError(f"Region {value!r} not found in Allen structure tree.")
+        raise ValueError(
+            f"Region {value!r} not found in Allen structure tree."
+        )
     return f"#{color}"
 
 
 @lru_cache(maxsize=1)
-def _load_allen_tree() -> Tuple[Dict[int, str], Dict[str, str], Dict[str, str]]:
+def _load_allen_tree() -> (
+    Tuple[Dict[int, str], Dict[str, str], Dict[str, str]]
+):
     """Load Allen structure metadata into lookup tables."""
     ids: Dict[int, str] = {}
     names: Dict[str, str] = {}

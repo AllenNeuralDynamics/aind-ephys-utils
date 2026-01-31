@@ -137,7 +137,7 @@ def add_scale_bars(
 
 
 def _as_1d_values(
-    values: Union[Sequence[float], np.ndarray, xr.DataArray]
+    values: Union[Sequence[float], np.ndarray, xr.DataArray],
 ) -> np.ndarray:
     """Coerce input into a 1D float array."""
     if isinstance(values, xr.DataArray):
@@ -150,7 +150,7 @@ def _as_1d_values(
 
 
 def _as_intervals(
-    values: Union[Sequence[Tuple[float, float]], np.ndarray, xr.DataArray]
+    values: Union[Sequence[Tuple[float, float]], np.ndarray, xr.DataArray],
 ) -> Iterable[Tuple[float, float]]:
     """Coerce input into an iterable of (start, end) pairs."""
     if isinstance(values, xr.DataArray):
@@ -164,7 +164,8 @@ def _as_intervals(
 
 
 def _resolve_event_labels(
-    events: np.ndarray, labels: Optional[Union[Sequence[str], Dict[float, str]]]
+    events: np.ndarray,
+    labels: Optional[Union[Sequence[str], Dict[float, str]]],
 ) -> list[Optional[str]]:
     """Resolve event labels from a sequence or mapping."""
     if labels is None:
@@ -178,9 +179,7 @@ def _resolve_event_labels(
 
 def _resolve_interval_labels(
     intervals: Sequence[Tuple[float, float]],
-    labels: Optional[
-        Union[Sequence[str], Dict[Tuple[float, float], str]]
-    ],
+    labels: Optional[Union[Sequence[str], Dict[Tuple[float, float], str]]],
 ) -> list[Optional[str]]:
     """Resolve interval labels from a sequence or mapping."""
     if labels is None:

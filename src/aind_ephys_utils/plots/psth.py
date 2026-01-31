@@ -147,7 +147,11 @@ def psth(  # noqa: C901
             y = da_plot.values
             if x is None:
                 ax.plot(
-                    y, color=c, alpha=alpha, linewidth=linewidth, label=labels[-1]
+                    y,
+                    color=c,
+                    alpha=alpha,
+                    linewidth=linewidth,
+                    label=labels[-1],
                 )
             else:
                 ax.plot(

@@ -324,12 +324,17 @@ def _plot_raster_on_axis(  # noqa: C901
             groups = _group_by_dim(da_u, group_by=group_by, dim=group_dim)
             allow_region = _allow_region_colors(group_by)
             colors = _resolve_group_colors(
-                groups, color=color, color_by=color_by, allow_region=allow_region
+                groups,
+                color=color,
+                color_by=color_by,
+                allow_region=allow_region,
             )
             unit_start = y0
 
             for (label, da, _), c in zip(groups, colors):
-                seq = _as_list_of_1d_arrays(np.asarray(da.values, dtype=object))
+                seq = _as_list_of_1d_arrays(
+                    np.asarray(da.values, dtype=object)
+                )
                 if tlim is not None:
                     tmin, tmax = tlim
                     seq = [
@@ -431,9 +436,7 @@ def _group_by_dim(
         return [(f"{key}={k}", v, k) for k, v in da.groupby(key)]
 
     labels = list(zip(*(da[g].values for g in group_by)))
-    group_coord = xr.DataArray(
-        labels, dims=(dim,), coords={dim: da[dim]}
-    )
+    group_coord = xr.DataArray(labels, dims=(dim,), coords={dim: da[dim]})
     da2 = da.assign_coords(_group=group_coord)
     out: list[Tuple[Optional[str], xr.DataArray, Any]] = []
     for key, sub in da2.groupby("_group"):
@@ -458,9 +461,7 @@ def _sort_by_dim(
             f"sort_by coord {sort_by!r} must have '{dim}' dimension."
         )
     if coord.ndim != 1:
-        raise ValueError(
-            f"sort_by coord {sort_by!r} must be 1D over '{dim}'."
-        )
+        raise ValueError(f"sort_by coord {sort_by!r} must be 1D over '{dim}'.")
     return da.sortby(sort_by)
 
 
