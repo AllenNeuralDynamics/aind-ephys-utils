@@ -38,9 +38,9 @@ def reduce(  # noqa: C901
     orthogonalize_across: str = "none",
     trial_dim: str = C.trial,
     time_dim: str = C.time,
-    condition_dims: Optional[Tuple[str, ...]] = None,
     trial_average: bool = True,
-    labels: Optional[xr.DataArray] = None,
+    labels: Optional[Union[Sequence[str], str]] = None,
+    time_resolved: bool = True,
     targets: Optional[xr.DataArray] = None,
     rank: Optional[int] = None,
     regularization: Optional[float] = None,
@@ -81,12 +81,14 @@ def reduce(  # noqa: C901
         Trial dimension name.
     time_dim:
         Time dimension name.
-    condition_dims:
-        Condition coordinate(s) used for dPCA marginals.
     trial_average:
         If True (default), average across trials before dPCA marginalization.
     labels:
-        Labels for supervised methods (coding direction, logistic).
+        Coordinate name(s) used for dPCA and supervised methods
+        (coding direction, logistic, lda). Must exist in `da.coords`.
+    time_resolved:
+        If True (default), fit supervised methods separately per timepoint
+        when `time_dim` is included in the sample stack.
     targets:
         Target matrix for reduced-rank regression.
     rank:
@@ -114,13 +116,15 @@ def reduce(  # noqa: C901
     if method == "dpca":
         if n_components is None:
             raise ValueError("n_components is required for method='dpca'.")
+        if labels is None:
+            raise ValueError("labels is required for method='dpca'.")
         return _reduce_dpca(
             da,
             n_components=n_components,
             dim=dim,
             trial_dim=trial_dim,
             time_dim=time_dim,
-            condition_dims=condition_dims,
+            labels=labels,
             trial_average=trial_average,
         )
 
@@ -139,6 +143,7 @@ def reduce(  # noqa: C901
             trial_dim=trial_dim,
             time_dim=time_dim,
             labels=labels,
+            time_resolved=time_resolved,
             targets=targets,
             rank=rank,
             regularization=regularization,
@@ -262,12 +267,18 @@ def _reduce_dpca(  # noqa: C901
     dim: Optional[str],
     trial_dim: str,
     time_dim: str,
-    condition_dims: Optional[Tuple[str, ...]],
+    labels: Optional[Union[Sequence[str], str]],
     trial_average: bool,
 ) -> xr.Dataset:
     """dPCA implementation using the original solver."""
-    if condition_dims is None or len(condition_dims) == 0:
-        raise ValueError("condition_dims is required for method='dpca'.")
+    if labels is None:
+        raise ValueError("labels is required for method='dpca'.")
+    if isinstance(labels, str):
+        condition_dims = (labels,)
+    else:
+        condition_dims = tuple(labels)
+    if len(condition_dims) == 0:
+        raise ValueError("labels is required for method='dpca'.")
     if trial_dim not in da.dims:
         raise ValueError(
             f"trial_dim {trial_dim!r} not found in DataArray dims."
@@ -371,7 +382,8 @@ def _reduce_supervised(  # noqa: C901
     orthogonalize_across: str,
     trial_dim: str,
     time_dim: str,
-    labels: Optional[Union[xr.DataArray, Dict[str, xr.DataArray]]],
+    labels: Optional[Union[Sequence[str], str]],
+    time_resolved: bool,
     targets: Optional[xr.DataArray],
     rank: Optional[int],
     regularization: Optional[float],
@@ -415,8 +427,46 @@ def _reduce_supervised(  # noqa: C901
         if w is not None and time_dim not in sample_dims:
             raise ValueError("window requires time_dim to be in sample dims.")
 
-    label_sets = _normalize_label_sets(labels)
+    if labels is None:
+        label_sets = []
+    else:
+        if isinstance(labels, str):
+            label_names = [labels]
+        else:
+            label_names = list(labels)
+        label_sets = []
+        for name in label_names:
+            if name not in da.coords:
+                raise ValueError(
+                    f"label coord {name!r} not found in DataArray coords."
+                )
+            label_sets.append((name, da.coords[name]))
     mode_entries: list[Dict[str, object]] = []
+
+    if (
+        method in ("coding_direction", "logistic", "lda")
+        and time_resolved
+        and time_dim in sample_dims
+    ):
+        return _reduce_supervised_time_resolved(
+            da,
+            method=method,
+            dim=dim,
+            n_components=n_components,
+            stack=sample_dims,
+            unstack=unstack,
+            window=window,
+            window_apply=window_apply,
+            orthogonalize=orthogonalize,
+            orthogonalize_across=orthogonalize_across,
+            trial_dim=trial_dim,
+            time_dim=time_dim,
+            labels=labels,
+            targets=targets,
+            rank=rank,
+            regularization=regularization,
+            cv=cv,
+        )
 
     if method in ("coding_direction", "logistic", "lda"):
         if not label_sets:
@@ -466,14 +516,24 @@ def _reduce_supervised(  # noqa: C901
                         model = LogisticRegression(max_iter=1000, C=C_val)
                     model.fit(X_fit, y_fit)
                     wts = model.coef_
+                    bias = model.intercept_
                 else:  # lda
                     if np.unique(y_fit).size < 2:
                         raise ValueError("lda requires at least 2 classes.")
                     model = LinearDiscriminantAnalysis()
                     model.fit(X_fit, y_fit)
-                    wts = model.scalings_.T
+                    if model.coef_.shape[0] == 2:
+                        wts = (model.coef_[1] - model.coef_[0])[None, :]
+                        bias = (model.intercept_[1] - model.intercept_[0])[
+                            None
+                        ]
+                    else:
+                        wts = model.coef_
+                        bias = model.intercept_
 
                 wts = _orthogonalize_weights(wts, method=orthogonalize)
+                if method not in ("logistic", "lda"):
+                    bias = None
                 X_proj, da_proj = _select_projection(
                     X_full, da_stack_full, window_mask, window_apply
                 )
@@ -482,6 +542,7 @@ def _reduce_supervised(  # noqa: C901
                         "label": label_name,
                         "window": w,
                         "weights": wts,
+                        "bias": bias,
                         "X_proj": X_proj,
                         "da_proj": da_proj,
                     }
@@ -556,6 +617,123 @@ def _reduce_supervised(  # noqa: C901
         )
 
     raise NotImplementedError(f"Unhandled supervised method {method!r}.")
+
+
+def _reduce_supervised_time_resolved(  # noqa: C901
+    da: xr.DataArray,
+    *,
+    method: str,
+    dim: Optional[str],
+    n_components: Optional[int],
+    stack: Tuple[str, ...],
+    unstack: bool,
+    window: Optional[
+        Union[Tuple[float, float], Sequence[Tuple[float, float]]]
+    ],
+    window_apply: str,
+    orthogonalize: str,
+    orthogonalize_across: str,
+    trial_dim: str,
+    time_dim: str,
+    labels: Optional[Union[Sequence[str], str]],
+    targets: Optional[xr.DataArray],
+    rank: Optional[int],
+    regularization: Optional[float],
+    cv: Optional[int],
+) -> xr.Dataset:
+    """Fit supervised methods per timepoint when time is in sample stack."""
+    if time_dim not in stack:
+        raise ValueError("time_resolved requires time_dim in sample dims.")
+    sample_dims = tuple(d for d in stack if d != time_dim)
+    if not sample_dims:
+        raise ValueError(
+            "time_resolved requires at least one non-time sample dim."
+        )
+    windows = _normalize_windows(window)
+    if len(windows) > 1 and window_apply == "fit_and_project":
+        raise ValueError(
+            "window_apply='fit_and_project' is not supported with multiple windows."
+        )
+
+    def _in_window(tval: float) -> bool:
+        """Return True if tval is inside any configured window."""
+        for w in windows:
+            if w is None:
+                return True
+            if w[0] <= tval <= w[1]:
+                return True
+        return False
+
+    time_vals = da[time_dim].values
+    template_proj = None
+    template_wts = None
+
+    # Find a template from the first valid timepoint.
+    for t in time_vals:
+        if _in_window(float(t)):
+            ds_t = _reduce_supervised(
+                da.sel({time_dim: t}),
+                method=method,
+                dim=dim,
+                n_components=n_components,
+                stack=sample_dims,
+                unstack=unstack,
+                window=None,
+                window_apply=window_apply,
+                orthogonalize=orthogonalize,
+                orthogonalize_across=orthogonalize_across,
+                trial_dim=trial_dim,
+                time_dim=time_dim,
+                labels=labels,
+                time_resolved=False,
+                targets=targets,
+                rank=rank,
+                regularization=regularization,
+                cv=cv,
+            )
+            template_proj = ds_t["projections"]
+            template_wts = ds_t["weights"]
+            break
+
+    if template_proj is None or template_wts is None:
+        raise ValueError("No timepoints available after window filtering.")
+
+    proj_list = []
+    weights_list = []
+    for t in time_vals:
+        if _in_window(float(t)):
+            ds_t = _reduce_supervised(
+                da.sel({time_dim: t}),
+                method=method,
+                dim=dim,
+                n_components=n_components,
+                stack=sample_dims,
+                unstack=unstack,
+                window=None,
+                window_apply=window_apply,
+                orthogonalize=orthogonalize,
+                orthogonalize_across=orthogonalize_across,
+                trial_dim=trial_dim,
+                time_dim=time_dim,
+                labels=labels,
+                time_resolved=False,
+                targets=targets,
+                rank=rank,
+                regularization=regularization,
+                cv=cv,
+            )
+            proj_t = ds_t["projections"]
+            wts_t = ds_t["weights"]
+        else:
+            proj_t = xr.full_like(template_proj, np.nan)
+            wts_t = xr.full_like(template_wts, np.nan)
+        proj_list.append(proj_t.expand_dims({time_dim: [t]}))
+        weights_list.append(wts_t.expand_dims({time_dim: [t]}))
+
+    projections = xr.concat(proj_list, dim=time_dim)
+    weights = xr.concat(weights_list, dim=time_dim)
+    projections = preserve_coords(da, projections)
+    return xr.Dataset({"projections": projections, "weights": weights})
 
 
 def _condition_mean(
@@ -839,17 +1017,6 @@ def _normalize_windows(
     return list(window)
 
 
-def _normalize_label_sets(
-    labels: Optional[Union[xr.DataArray, Dict[str, xr.DataArray]]],
-) -> Sequence[Tuple[str, xr.DataArray]]:
-    """Normalize labels input to a list of (name, labels) pairs."""
-    if labels is None:
-        return []
-    if isinstance(labels, dict):
-        return list(labels.items())
-    return [("labels", labels)]
-
-
 def _assemble_supervised_output(  # noqa: C901
     da: xr.DataArray,
     *,
@@ -885,10 +1052,18 @@ def _assemble_supervised_output(  # noqa: C901
         for entry in mode_entries:
             wts = np.asarray(entry["weights"])
             X_proj = np.asarray(entry["X_proj"])
+            bias_val = entry.get("bias")
+            if orthogonalize == "none" and bias_val is not None:
+                bias = np.asarray(bias_val)
+            else:
+                bias = None
             for ci in range(wts.shape[0]):
                 labels.append(_label_for(entry, ci))
                 weights_list.append(wts[ci])
-                proj_list.append(X_proj @ wts[ci])
+                if bias is not None:
+                    proj_list.append(X_proj @ wts[ci] + bias[ci])
+                else:
+                    proj_list.append(X_proj @ wts[ci])
     else:
         groups: Dict[str, list[Tuple[Dict[str, object], int]]] = {}
         for entry in mode_entries:
