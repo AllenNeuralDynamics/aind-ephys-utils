@@ -50,7 +50,10 @@ def _get_ids(df: pd.DataFrame, id_col: Optional[str], kind: str) -> np.ndarray:
     Default to index unless id_col is provided.
     """
     if id_col is None:
-        return df.index.to_numpy()
+        try:
+            return df.index.to_numpy()
+        except AttributeError:  # polars has no index
+            return np.arange(len(df))
     if id_col not in df.columns:
         raise FromDataFrameError(
             f"{kind}_id_col={id_col!r} not found in DataFrame columns."
@@ -179,18 +182,18 @@ def _build_events(  # noqa: C901
         )
         ev_to_i = {ev: i for i, ev in enumerate(event_names)}
 
-        t_start = pd.to_numeric(
-            trials_df[long_time_col], errors="coerce"
-        ).to_numpy(dtype=float)
+        t_start = _col_to_float_numpy(
+            trials_df, long_time_col
+        )
         if long_end_time_col and long_end_time_col in trials_df.columns:
-            t_end = pd.to_numeric(
-                trials_df[long_end_time_col], errors="coerce"
-            ).to_numpy(dtype=float)
+            t_end = _col_to_float_numpy(
+                trials_df, long_end_time_col
+            )
         else:
             t_end = t_start
 
         for r in range(len(trials_df)):
-            ev = str(trials_df.iloc[r][long_event_col])
+            ev = str(_get_cell(trials_df, r, long_event_col))
             ei = ev_to_i[ev]
             data[r, ei, 0] = t_start[r]
             data[r, ei, 1] = t_end[r]
@@ -210,9 +213,7 @@ def _build_events(  # noqa: C901
         # instantaneous events
         for k, name in enumerate(event_cols.keys()):
             col = event_cols[name]
-            ts = pd.to_numeric(trials_df[col], errors="coerce").to_numpy(
-                dtype=float
-            )
+            ts = _col_to_float_numpy(trials_df, col)
             data[:, k, 0] = ts
             data[:, k, 1] = ts
 
@@ -220,12 +221,8 @@ def _build_events(  # noqa: C901
         off = len(event_cols)
         for j, name in enumerate(epoch_cols.keys()):
             sc, ec = epoch_cols[name]
-            ts = pd.to_numeric(trials_df[sc], errors="coerce").to_numpy(
-                dtype=float
-            )
-            te = pd.to_numeric(trials_df[ec], errors="coerce").to_numpy(
-                dtype=float
-            )
+            ts = _col_to_float_numpy(trials_df, sc)
+            te = _col_to_float_numpy(trials_df, ec)
             data[:, off + j, 0] = ts
             data[:, off + j, 1] = te
 
@@ -267,6 +264,35 @@ def _build_events(  # noqa: C901
 
     return events
 
+def _col_to_float_numpy(df, col):
+    """Return column as float numpy array with coercion."""
+    if col not in df.columns:
+        raise KeyError(f"{col} not in DataFrame")
+
+    s = df[col]
+
+    # ---- pandas ----
+    try:
+        import pandas as pd
+        if isinstance(s, pd.Series):
+            return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
+    except ImportError:
+        pass
+
+    # ---- polars ----
+    try:
+        import polars as pl
+        if isinstance(s, pl.Series):
+            return (
+                s.cast(pl.Float64, strict=False)  # coercion like errors="coerce"
+                 .to_numpy()
+                 .astype(float)
+            )
+    except ImportError:
+        pass
+
+    # ---- fallback (numpy / list-like) ----
+    return np.asarray(s, dtype=float)
 
 def _infer_window_from_time(
     time: np.ndarray, *, bin_size: float
@@ -288,6 +314,18 @@ def _infer_window_from_time(
         )
     window = (centers[0] - dt / 2, centers[-1] + dt / 2)
     return centers, window
+
+
+def _get_cell(df, row_idx: int, col: str):
+    """Returns a cell from a DataFrame
+    
+    Works with Polars or Pandas
+    """
+    # pandas
+    if hasattr(df, "iloc"):
+        return df.iloc[row_idx][col]
+    # polars
+    return df.row(row_idx, named=True)[col]
 
 
 def _build_spikes_units_only(
@@ -314,7 +352,8 @@ def _build_spikes_units_only(
     data = np.empty((n_units, 1), dtype=object)
     for ui in range(n_units):
         spk = _ensure_1d_float_array(
-            units_df.iloc[ui][spike_times_col], ctx=f"unit {ui} spike_times"
+            _get_cell(units_df, ui, spike_times_col),
+            ctx=f"unit {ui} spike_times"
         )
         data[ui, 0] = spk
 
@@ -390,12 +429,8 @@ def _build_spikes_with_trials(  # noqa: C901
     unit_ids = _get_ids(units_df, unit_id_col, "unit")
     trial_ids = _get_ids(trials_df, trial_id_col, "trial")
 
-    t_start = pd.to_numeric(
-        trials_df[trial_start_col], errors="coerce"
-    ).to_numpy(dtype=float)
-    t_end = pd.to_numeric(trials_df[trial_end_col], errors="coerce").to_numpy(
-        dtype=float
-    )
+    t_start = _col_to_float_numpy(trials_df, trial_start_col)
+    t_end = _col_to_float_numpy(trials_df, trial_end_col)
 
     if np.any(~np.isfinite(t_start)) or np.any(~np.isfinite(t_end)):
         raise FromDataFrameError(
@@ -412,9 +447,7 @@ def _build_spikes_with_trials(  # noqa: C901
             raise FromDataFrameError(
                 f"align_to={align_to!r} not found in trials_df."
             )
-        anchor = pd.to_numeric(trials_df[align_to], errors="coerce").to_numpy(
-            dtype=float
-        )
+        anchor = _col_to_float_numpy(trials_df, align_to)
         if np.any(~np.isfinite(anchor)):
             raise FromDataFrameError(
                 f"align_to={align_to!r} contains NaNs; fill/drop before ingestion."
@@ -428,8 +461,8 @@ def _build_spikes_with_trials(  # noqa: C901
     out = np.empty((n_units, n_trials), dtype=object)
     for ui in range(n_units):
         spk_sess = _ensure_1d_float_array(
-            units_df.iloc[ui][spike_times_col],
-            ctx=f"unit {ui} spike_times",
+            _get_cell(units_df, ui, spike_times_col),
+            ctx=f"unit {ui} spike_times"
         )
 
         lo = np.searchsorted(spk_sess, t_start, side="left")
