@@ -27,7 +27,7 @@ def reduce(  # noqa: C901
     method: str,
     dim: Optional[str] = None,
     n_components: Optional[int] = None,
-    stack: Optional[Tuple[str, ...]] = None,
+    stack: Optional[Tuple[str, ...]] = (C.trial, C.time),
     unstack: bool = True,
     return_dataset: bool = True,
     window: Optional[
@@ -40,7 +40,6 @@ def reduce(  # noqa: C901
     time_dim: str = C.time,
     trial_average: bool = True,
     labels: Optional[Union[Sequence[str], str]] = None,
-    time_resolved: bool = True,
     targets: Optional[xr.DataArray] = None,
     rank: Optional[int] = None,
     regularization: Optional[float] = None,
@@ -54,14 +53,14 @@ def reduce(  # noqa: C901
     da:
         Input DataArray.
     method:
-        Reduction method (e.g. "pca_trials", "pca_time", "dpca",
+        Reduction method (e.g. "pca", "dpca",
         "coding_direction", "logistic", "lda", "rrr").
     dim:
         Dimension to reduce across for methods that operate on a single axis.
     n_components:
         Number of components to keep (PCA, dPCA).
     stack:
-        Optional dims to stack before reduction (e.g. trial/time).
+        Dims to stack before reduction (default: (trial, time)).
     unstack:
         If True, unstack stacked dims in the output.
     return_dataset:
@@ -86,9 +85,6 @@ def reduce(  # noqa: C901
     labels:
         Coordinate name(s) used for dPCA and supervised methods
         (coding direction, logistic, lda). Must exist in `da.coords`.
-    time_resolved:
-        If True (default), fit supervised methods separately per timepoint
-        when `time_dim` is included in the sample stack.
     targets:
         Target matrix for reduced-rank regression.
     rank:
@@ -101,8 +97,6 @@ def reduce(  # noqa: C901
     method = method.lower()
     if method not in (
         "pca",
-        "pca_trials",
-        "pca_time",
         "dpca",
         "coding_direction",
         "logistic",
@@ -112,6 +106,9 @@ def reduce(  # noqa: C901
         raise NotImplementedError(
             f"Reduction method {method!r} is not implemented yet."
         )
+
+    if stack is not None:
+        stack = tuple(d for d in stack if d in da.dims)
 
     if method == "dpca":
         if n_components is None:
@@ -143,7 +140,6 @@ def reduce(  # noqa: C901
             trial_dim=trial_dim,
             time_dim=time_dim,
             labels=labels,
-            time_resolved=time_resolved,
             targets=targets,
             rank=rank,
             regularization=regularization,
@@ -161,24 +157,6 @@ def reduce(  # noqa: C901
         if stack is None:
             stack = tuple(d for d in da.dims if d != dim)
         sample_dims = stack
-        feature_dims = (dim,)
-    elif method == "pca_trials":
-        if trial_dim not in da.dims:
-            raise ValueError(
-                f"trial_dim {trial_dim!r} not found in DataArray dims."
-            )
-        sample_dims = stack if stack is not None else (trial_dim,)
-        feature_dims = _feature_dims(da.dims, sample_dims, dim=dim)
-    else:  # pca_time
-        if time_dim not in da.dims:
-            raise ValueError(
-                f"time_dim {time_dim!r} not found in DataArray dims."
-            )
-        if trial_dim in da.dims:
-            default_samples = (trial_dim, time_dim)
-        else:
-            default_samples = (time_dim,)
-        sample_dims = stack if stack is not None else default_samples
         feature_dims = _feature_dims(da.dims, sample_dims, dim=dim)
 
     da_stack = _stack_for_pca(da, sample_dims, feature_dims)
@@ -383,7 +361,6 @@ def _reduce_supervised(  # noqa: C901
     trial_dim: str,
     time_dim: str,
     labels: Optional[Union[Sequence[str], str]],
-    time_resolved: bool,
     targets: Optional[xr.DataArray],
     rank: Optional[int],
     regularization: Optional[float],
@@ -443,47 +420,36 @@ def _reduce_supervised(  # noqa: C901
             label_sets.append((name, da.coords[name]))
     mode_entries: list[Dict[str, object]] = []
 
-    if (
-        method in ("coding_direction", "logistic", "lda")
-        and time_resolved
-        and time_dim in sample_dims
-    ):
-        return _reduce_supervised_time_resolved(
-            da,
-            method=method,
-            dim=dim,
-            n_components=n_components,
-            stack=sample_dims,
-            unstack=unstack,
-            window=window,
-            window_apply=window_apply,
-            orthogonalize=orthogonalize,
-            orthogonalize_across=orthogonalize_across,
-            trial_dim=trial_dim,
-            time_dim=time_dim,
-            labels=labels,
-            targets=targets,
-            rank=rank,
-            regularization=regularization,
-            cv=cv,
-        )
-
     if method in ("coding_direction", "logistic", "lda"):
         if not label_sets:
             raise ValueError("labels are required for supervised methods.")
         for label_name, label_da in label_sets:
             y_full = _stack_labels(label_da, sample_dims=sample_dims, ref=da)
-            base_mask = _label_mask(y_full)
+            base_mask_full = _label_mask(y_full)
             for w in windows:
                 window_mask = (
                     _window_mask(da_stack_full, time_dim=time_dim, window=w)
                     if w is not None
                     else None
                 )
-                mask = base_mask
-                if window_mask is not None:
-                    mask = mask & window_mask
-                X_fit, y_fit = X[mask], y_full[mask]
+                if w is None:
+                    X_fit = X[base_mask_full]
+                    y_fit = y_full[base_mask_full]
+                else:
+                    in_window = (da[time_dim] >= w[0]) & (da[time_dim] <= w[1])
+                    da_fit = da.where(in_window, drop=True)
+                    da_stack_fit = _stack_for_pca(
+                        da_fit, sample_dims, feature_dims
+                    )
+                    X_fit = np.asarray(da_stack_fit.data)
+                    if np.isnan(X_fit).any():
+                        X_fit = np.nan_to_num(X_fit, nan=0.0)
+                    y_fit = _stack_labels(
+                        label_da, sample_dims=sample_dims, ref=da_fit
+                    )
+                    base_mask = _label_mask(y_fit)
+                    X_fit = X_fit[base_mask]
+                    y_fit = y_fit[base_mask]
                 if X_fit.size == 0:
                     raise ValueError(
                         "No samples available after window/label filtering."
@@ -617,123 +583,6 @@ def _reduce_supervised(  # noqa: C901
         )
 
     raise NotImplementedError(f"Unhandled supervised method {method!r}.")
-
-
-def _reduce_supervised_time_resolved(  # noqa: C901
-    da: xr.DataArray,
-    *,
-    method: str,
-    dim: Optional[str],
-    n_components: Optional[int],
-    stack: Tuple[str, ...],
-    unstack: bool,
-    window: Optional[
-        Union[Tuple[float, float], Sequence[Tuple[float, float]]]
-    ],
-    window_apply: str,
-    orthogonalize: str,
-    orthogonalize_across: str,
-    trial_dim: str,
-    time_dim: str,
-    labels: Optional[Union[Sequence[str], str]],
-    targets: Optional[xr.DataArray],
-    rank: Optional[int],
-    regularization: Optional[float],
-    cv: Optional[int],
-) -> xr.Dataset:
-    """Fit supervised methods per timepoint when time is in sample stack."""
-    if time_dim not in stack:
-        raise ValueError("time_resolved requires time_dim in sample dims.")
-    sample_dims = tuple(d for d in stack if d != time_dim)
-    if not sample_dims:
-        raise ValueError(
-            "time_resolved requires at least one non-time sample dim."
-        )
-    windows = _normalize_windows(window)
-    if len(windows) > 1 and window_apply == "fit_and_project":
-        raise ValueError(
-            "window_apply='fit_and_project' is not supported with multiple windows."
-        )
-
-    def _in_window(tval: float) -> bool:
-        """Return True if tval is inside any configured window."""
-        for w in windows:
-            if w is None:
-                return True
-            if w[0] <= tval <= w[1]:
-                return True
-        return False
-
-    time_vals = da[time_dim].values
-    template_proj = None
-    template_wts = None
-
-    # Find a template from the first valid timepoint.
-    for t in time_vals:
-        if _in_window(float(t)):
-            ds_t = _reduce_supervised(
-                da.sel({time_dim: t}),
-                method=method,
-                dim=dim,
-                n_components=n_components,
-                stack=sample_dims,
-                unstack=unstack,
-                window=None,
-                window_apply=window_apply,
-                orthogonalize=orthogonalize,
-                orthogonalize_across=orthogonalize_across,
-                trial_dim=trial_dim,
-                time_dim=time_dim,
-                labels=labels,
-                time_resolved=False,
-                targets=targets,
-                rank=rank,
-                regularization=regularization,
-                cv=cv,
-            )
-            template_proj = ds_t["projections"]
-            template_wts = ds_t["weights"]
-            break
-
-    if template_proj is None or template_wts is None:
-        raise ValueError("No timepoints available after window filtering.")
-
-    proj_list = []
-    weights_list = []
-    for t in time_vals:
-        if _in_window(float(t)):
-            ds_t = _reduce_supervised(
-                da.sel({time_dim: t}),
-                method=method,
-                dim=dim,
-                n_components=n_components,
-                stack=sample_dims,
-                unstack=unstack,
-                window=None,
-                window_apply=window_apply,
-                orthogonalize=orthogonalize,
-                orthogonalize_across=orthogonalize_across,
-                trial_dim=trial_dim,
-                time_dim=time_dim,
-                labels=labels,
-                time_resolved=False,
-                targets=targets,
-                rank=rank,
-                regularization=regularization,
-                cv=cv,
-            )
-            proj_t = ds_t["projections"]
-            wts_t = ds_t["weights"]
-        else:
-            proj_t = xr.full_like(template_proj, np.nan)
-            wts_t = xr.full_like(template_wts, np.nan)
-        proj_list.append(proj_t.expand_dims({time_dim: [t]}))
-        weights_list.append(wts_t.expand_dims({time_dim: [t]}))
-
-    projections = xr.concat(proj_list, dim=time_dim)
-    weights = xr.concat(weights_list, dim=time_dim)
-    projections = preserve_coords(da, projections)
-    return xr.Dataset({"projections": projections, "weights": weights})
 
 
 def _condition_mean(
@@ -958,11 +807,6 @@ def _window_mask(
 ) -> Optional[np.ndarray]:
     """Build a boolean mask for sample times inside the window."""
     if window is None:
-        return None
-    if (
-        time_dim not in da_stack.dims
-        and time_dim not in da_stack["_sample"].dims
-    ):
         return None
     index = da_stack["_sample"].to_index()
     if time_dim not in index.names:
