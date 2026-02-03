@@ -131,6 +131,7 @@ class dPCA(BaseEstimator):
 
     def _marginalize(self, X, save_memory=False):  # noqa: C901
         """Compute ANOVA-style marginalizations of X."""
+
         def mmean(X, axes, expand=False):
             """Mean over axes, optionally keeping dimensions."""
             Z = X.copy()
@@ -249,7 +250,7 @@ class dPCA(BaseEstimator):
             self.regularizer = lam
             for i in range(self.n_trials):
                 trainX = X[..., : n_unq - 1]
-                validX = X[..., n_unq - 1:]
+                validX = X[..., n_unq - 1 :]
                 trainmXs, _ = (
                     self._marginalize(trainX),
                     self._marginalize(validX),
@@ -343,6 +344,7 @@ class dPCA(BaseEstimator):
         self, X, trialX=None, mXs=None, center=True, SVD=None, optimize=True
     ):
         """Internal fit routine implementing the dPCA solution."""
+
         def flat2d(A):
             """Flatten all but the first axis."""
             return A.reshape((A.shape[0], -1))
@@ -375,6 +377,7 @@ class dPCA(BaseEstimator):
 
     def transform(self, X, marginalization=None):
         """Project X onto dPCA components for each marginalization."""
+
         def marginal_variances(marginal):
             """Compute variance explained within a marginalization."""
             D, Xr = self.D[marginal], X.reshape((X.shape[0], -1))

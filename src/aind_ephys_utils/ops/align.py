@@ -32,6 +32,7 @@ def _normalize_events(events: Union[xr.Dataset, xr.DataArray]) -> xr.Dataset:
       - DataArray of events with dims (trial, event, bound)
     Return a Dataset with events["t"] always present.
     """
+
     if isinstance(events, xr.DataArray):
         if "bound" in events.dims:
             if "start" not in events.coords.get("bound", []):
@@ -170,42 +171,28 @@ def align(  # noqa: C901
             raise EphysAlignError(
                 "Ragged spikes alignment requires a 'trial' dimension."
             )
-        # Ensure t0 is aligned on trial coordinate
-        if not da[C.trial].identical(t0[C.trial]):
-            t0 = t0.sel({C.trial: da[C.trial]})
 
-        def _align_entry(spk: object, trial_idx: int) -> np.ndarray:
+        def _align_entry(spk: object, trial_start: float) -> np.ndarray:
             """Align a single ragged spike array for one (trial, unit) entry."""
             if spk is None:
                 return np.asarray([], dtype=float)
             arr = np.asarray(spk, dtype=float)
-            arr = arr - float(t0.values[trial_idx])
-            arr = arr[(arr >= tmin) & (arr <= tmax)]
-            return arr
+            start_index = np.searchsorted(arr, trial_start + tmin)
+            end_index = np.searchsorted(arr, trial_start + tmax)
+            return arr[start_index:end_index] - trial_start
 
-        # Apply across (trial, unit)
-        data = da.data
-        out = np.empty_like(data, dtype=object)
-
-        # iterate trials then units (keeps trial index available)
-        for i in range(data.shape[da.get_axis_num(C.trial)]):
-            # we need to index properly if dims order isn't (trial, unit)
-            # simplest: transpose to (trial, unit), operate, then transpose back
-            pass
-
-        # Robust version: work on a transposed view
-        tr_first = da.transpose(
-            C.trial, C.unit, ...
-        ).data  # should now be (trial, unit)
-        out_tf = np.empty_like(tr_first, dtype=object)
-        for i in range(tr_first.shape[0]):
-            for j in range(tr_first.shape[1]):
-                out_tf[i, j] = _align_entry(tr_first[i, j], i)
+        # Output as (trial, unit)
+        out_tf = np.empty((len(t0.values), len(da[C.unit])), dtype=object)
+        for u in range(da.sizes[C.unit]):
+            spks = da.isel({C.unit: u}).data[0]
+            for t in range(len(t0.values)):
+                trial_start = float(t0.values[t])
+                out_tf[t, u] = _align_entry(spks, trial_start)
 
         out_da = xr.DataArray(
             out_tf,
             dims=(C.trial, C.unit),
-            coords={C.trial: da[C.trial], C.unit: da[C.unit]},
+            coords={C.trial: t0[C.trial], C.unit: da[C.unit]},
             name=da.name,
             attrs=dict(da.attrs),
         )

@@ -150,8 +150,6 @@ def _build_events(  # noqa: C901
       events: DataArray dims (trial, event, bound)
       bound ∈ {"start","end"} ; instantaneous events have start==end
     """
-    trial_ids = _get_ids(trials_df, trial_id_col, "trial")
-
     use_long = long_event_col is not None and long_time_col is not None
     if not use_long and event_cols is None and epoch_cols is None:
         event_cols, epoch_cols = _infer_wide_event_cols(trials_df)
@@ -182,13 +180,9 @@ def _build_events(  # noqa: C901
         )
         ev_to_i = {ev: i for i, ev in enumerate(event_names)}
 
-        t_start = _col_to_float_numpy(
-            trials_df, long_time_col
-        )
+        t_start = _col_to_float_numpy(trials_df, long_time_col)
         if long_end_time_col and long_end_time_col in trials_df.columns:
-            t_end = _col_to_float_numpy(
-                trials_df, long_end_time_col
-            )
+            t_end = _col_to_float_numpy(trials_df, long_end_time_col)
         else:
             t_end = t_start
 
@@ -230,7 +224,7 @@ def _build_events(  # noqa: C901
         data,
         dims=(C.trial, C.event, "bound"),
         coords={
-            C.trial: trial_ids,
+            C.trial: _get_ids(trials_df, trial_id_col, "trial"),
             C.event: np.asarray(event_names, dtype=object),
             "bound": np.asarray(["start", "end"], dtype=object),
         },
@@ -264,6 +258,7 @@ def _build_events(  # noqa: C901
 
     return events
 
+
 def _col_to_float_numpy(df, col):
     """Return column as float numpy array with coercion."""
     if col not in df.columns:
@@ -274,6 +269,7 @@ def _col_to_float_numpy(df, col):
     # ---- pandas ----
     try:
         import pandas as pd
+
         if isinstance(s, pd.Series):
             return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
     except ImportError:
@@ -282,17 +278,21 @@ def _col_to_float_numpy(df, col):
     # ---- polars ----
     try:
         import polars as pl
+
         if isinstance(s, pl.Series):
             return (
-                s.cast(pl.Float64, strict=False)  # coercion like errors="coerce"
-                 .to_numpy()
-                 .astype(float)
+                s.cast(
+                    pl.Float64, strict=False
+                )  # coercion like errors="coerce"
+                .to_numpy()
+                .astype(float)
             )
     except ImportError:
         pass
 
     # ---- fallback (numpy / list-like) ----
     return np.asarray(s, dtype=float)
+
 
 def _infer_window_from_time(
     time: np.ndarray, *, bin_size: float
@@ -317,10 +317,7 @@ def _infer_window_from_time(
 
 
 def _get_cell(df, row_idx: int, col: str):
-    """Returns a cell from a DataFrame
-    
-    Works with Polars or Pandas
-    """
+    """Returns a cell from a Pandas or Polars DataFrame"""
     # pandas
     if hasattr(df, "iloc"):
         return df.iloc[row_idx][col]
@@ -353,7 +350,7 @@ def _build_spikes_units_only(
     for ui in range(n_units):
         spk = _ensure_1d_float_array(
             _get_cell(units_df, ui, spike_times_col),
-            ctx=f"unit {ui} spike_times"
+            ctx=f"unit {ui} spike_times",
         )
         data[ui, 0] = spk
 
@@ -391,7 +388,7 @@ def _build_spikes_with_trials(  # noqa: C901
     trial_id_col: Optional[str],
     trial_start_col: str,
     trial_end_col: str,
-    align_to: Optional[str],  # anchor column in trials_df; default trial_start
+    align_to: Optional[str],  # anchor column in trials_df; default start_time
     unit_coords: Optional[List[str]],
     trial_coords: Optional[List[str]],
     bin_size: Optional[float],
@@ -426,7 +423,14 @@ def _build_spikes_with_trials(  # noqa: C901
                 f"trials_df must contain trial_end_col={trial_end_col!r}."
             )
 
-    unit_ids = _get_ids(units_df, unit_id_col, "unit")
+    da_session = _build_spikes_units_only(
+        units_df,
+        spike_times_col=spike_times_col,
+        unit_id_col=unit_id_col,
+        unit_coords=unit_coords,
+        time_unit=time_unit,
+    )
+
     trial_ids = _get_ids(trials_df, trial_id_col, "trial")
 
     t_start = _col_to_float_numpy(trials_df, trial_start_col)
@@ -453,28 +457,6 @@ def _build_spikes_with_trials(  # noqa: C901
                 f"align_to={align_to!r} contains NaNs; fill/drop before ingestion."
             )
         anchor_name = align_to
-
-    n_units = len(units_df)
-    n_trials = len(trials_df)
-
-    # Build ragged spikes in session time for each trial, then align via ops.align
-    out = np.empty((n_units, n_trials), dtype=object)
-    for ui in range(n_units):
-        spk_sess = _ensure_1d_float_array(
-            _get_cell(units_df, ui, spike_times_col),
-            ctx=f"unit {ui} spike_times"
-        )
-
-        lo = np.searchsorted(spk_sess, t_start, side="left")
-        hi = np.searchsorted(spk_sess, t_end, side="right")
-        out[ui, :] = [spk_sess[lo_i:hi_i] for lo_i, hi_i in zip(lo, hi)]
-
-    da_session = xr.DataArray(
-        out,
-        dims=(C.unit, C.trial),
-        coords={C.unit: unit_ids, C.trial: trial_ids},
-        name="spikes",
-    )
 
     events = xr.DataArray(
         anchor,
