@@ -1,8 +1,8 @@
 """Validation utilities for canonical ephys xarray objects.
 
 `aind_ephys_utils` expects a small set of canonical DataArray "kinds" (ragged
-spikes, binned spikes, continuous signals). This module provides helpers to
-infer and validate those conventions.
+spikes, binned spikes, continuous signals, events). This module provides helpers
+to infer and validate those conventions.
 """
 
 from __future__ import annotations
@@ -32,13 +32,15 @@ class ValidationResult:
     ok:
         True if validation succeeded.
     kind:
-        Inferred kind (e.g. "spikes_ragged", "binned", "continuous").
+        Inferred kind (e.g. "spikes_ragged", "binned", "continuous", "events").
     message:
         Human-readable status string.
     """
 
     ok: bool
-    kind: str  # "spikes_ragged" | "continuous" | "binned" | "unknown"
+    kind: (
+        str  # "spikes_ragged" | "continuous" | "binned" | "events" | "unknown"
+    )
     message: str = ""
 
 
@@ -90,6 +92,27 @@ def is_binned_spikes(da: xr.DataArray) -> bool:
     return required.issubset(set(da.dims))
 
 
+def is_events(da: xr.DataArray) -> bool:
+    """
+    Events convention:
+      - dims are (trial, event, bound)
+      - dtype is numeric
+      - bound coordinate has ["start", "end"]
+      - each event has start/end times (instantaneous events have start==end)
+    """
+    if da.dtype == object:
+        return False
+    required = {C.trial, C.event, "bound"}
+    if not required.issubset(set(da.dims)):
+        return False
+    # Check for bound coordinate with start/end
+    if "bound" in da.coords:
+        bounds = da.coords["bound"].values
+        if len(bounds) == 2 and set(bounds) == {"start", "end"}:
+            return True
+    return False
+
+
 def infer_kind(da: xr.DataArray) -> str:
     """Infer the canonical kind of a DataArray.
 
@@ -101,8 +124,10 @@ def infer_kind(da: xr.DataArray) -> str:
     Returns
     -------
     str
-        One of: "spikes_ragged", "binned", "continuous", or "unknown".
+        One of: "spikes_ragged", "binned", "continuous", "events", or "unknown".
     """
+    if is_events(da):
+        return "events"
     if is_ragged_spikes(da):
         return "spikes_ragged"
     if is_binned_spikes(da):
@@ -185,7 +210,7 @@ def validate(
         The DataArray to validate.
     kind:
         If provided, require that the DataArray matches this inferred kind.
-        One of: "spikes_ragged", "continuous", "binned".
+        One of: "spikes_ragged", "continuous", "binned", "events".
     require_time_coord:
         If True, require a 'time' coordinate whenever there is a time dimension.
     check_ragged_contents:
@@ -209,7 +234,9 @@ def validate(
         )
 
     # Minimal structural checks
-    if inferred == "spikes_ragged":
+    if inferred == "events":
+        _require_dims(da, (C.trial, C.event, "bound"), context="Events")
+    elif inferred == "spikes_ragged":
         _require_dims(da, (C.trial, C.unit), context="Ragged spikes")
         if check_ragged_contents:
             _validate_ragged_contents(da)
@@ -224,7 +251,8 @@ def validate(
     else:
         msg = (
             "Could not infer DataArray kind. "
-            "Expected ragged spikes (object dtype with dims trial/unit), "
+            "Expected events (trial/event/bound), "
+            "ragged spikes (object dtype with dims trial/unit), "
             "binned spikes (trial/unit/time), or continuous (numeric with time). "
             f"Got dims={da.dims}, dtype={da.dtype!r}."
         )

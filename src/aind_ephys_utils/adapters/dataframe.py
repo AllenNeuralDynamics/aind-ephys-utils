@@ -1,7 +1,7 @@
-"""Pandas/Polars -> xarray ingestion for ephys analysis.
+"""pandas/polars -> xarray ingestion for ephys analysis.
 
 This module implements `from_dataframe`, an adapter that converts one or two
-pandas DataFrames into canonical xarray objects.
+DataFrames into canonical xarray objects.
 
 Supported patterns
 ------------------
@@ -260,16 +260,35 @@ def _build_events(  # noqa: C901
                 f"{long_event_col!r} and {long_time_col!r}."
             )
 
+        # Get unique trial IDs in order of first appearance
+        trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+        unique_trial_ids = []
+        seen_trials = set()
+        for tid in trial_ids:
+            # Handle potential non-hashable types
+            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            if tid_key not in seen_trials:
+                unique_trial_ids.append(tid)
+                seen_trials.add(tid_key)
+        unique_trial_ids = np.asarray(unique_trial_ids)
+        n_trials = len(unique_trial_ids)
+        
+        # Create mapping from trial_id to index
+        trial_to_idx = {}
+        for i, tid in enumerate(unique_trial_ids):
+            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            trial_to_idx[tid_key] = i
+
         # Preserve event label order
-        seen = set()
+        seen_events = set()
         event_names: List[str] = []
         for v in trials_df[long_event_col].astype(str).to_numpy():
-            if v not in seen:
+            if v not in seen_events:
                 event_names.append(v)
-                seen.add(v)
+                seen_events.add(v)
 
         data = np.full(
-            (len(trials_df), len(event_names), 2), np.nan, dtype=float
+            (n_trials, len(event_names), 2), np.nan, dtype=float
         )
         ev_to_i = {ev: i for i, ev in enumerate(event_names)}
 
@@ -279,11 +298,22 @@ def _build_events(  # noqa: C901
         else:
             t_end = t_start
 
+        # Build mapping from trial_id to first row index for metadata extraction
+        trial_id_to_first_row = {}
+        all_trial_ids = _get_ids(trials_df, trial_id_col, "trial")
         for r in range(len(trials_df)):
+            tid = all_trial_ids[r]
+            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            if tid_key not in trial_id_to_first_row:
+                trial_id_to_first_row[tid_key] = r
+            ti = trial_to_idx[tid_key]
             ev = str(_get_cell(trials_df, r, long_event_col))
             ei = ev_to_i[ev]
-            data[r, ei, 0] = t_start[r]
-            data[r, ei, 1] = t_end[r]
+            data[ti, ei, 0] = t_start[r]
+            data[ti, ei, 1] = t_end[r]
+        
+        # Override trial_ids with unique ones for the DataArray
+        trial_ids = unique_trial_ids
 
     else:
         if not event_cols and not epoch_cols:
@@ -312,12 +342,15 @@ def _build_events(  # noqa: C901
             te = _col_to_float_numpy(trials_df, ec)
             data[:, off + j, 0] = ts
             data[:, off + j, 1] = te
+        
+        # Get trial_ids for wide format
+        trial_ids = _get_ids(trials_df, trial_id_col, "trial")
 
     events = xr.DataArray(
         data,
         dims=(C.trial, C.event, "bound"),
         coords={
-            C.trial: _get_ids(trials_df, trial_id_col, "trial"),
+            C.trial: trial_ids,
             C.event: np.asarray(event_names, dtype=object),
             "bound": np.asarray(["start", "end"], dtype=object),
         },
@@ -346,8 +379,20 @@ def _build_events(  # noqa: C901
             exclude.add(long_end_time_col)
         trial_coords = _default_coords(trials_df, exclude)
 
-    for c in trial_coords:
-        events = events.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
+    # Extract metadata for each unique trial
+    if use_long:
+        # For long format, extract metadata from first row of each trial
+        for c in trial_coords:
+            coord_values = np.empty(len(trial_ids), dtype=object)
+            for i, tid in enumerate(trial_ids):
+                tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+                row_idx = trial_id_to_first_row[tid_key]
+                coord_values[i] = _get_cell(trials_df, row_idx, c)
+            events = events.assign_coords({c: (C.trial, coord_values)})
+    else:
+        # For wide format, use all rows directly
+        for c in trial_coords:
+            events = events.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
 
     return events
 
@@ -588,7 +633,9 @@ def from_dataframe(
     validate: bool = True,
 ) -> xr.DataArray:
     """
-    Four cases (by number of DataFrames and bin_size):
+    Convert pandas or polars DataFrames to xarray DataArrays for ephys analysis.
+
+    Four use cases (by number of DataFrames and bin_size):
 
     1) from_dataframe(units_df):
          -> ragged spikes DataArray (unit, trial) with trial=[0]
@@ -605,6 +652,125 @@ def from_dataframe(
     4) from_dataframe(units_df, trials_df, bin_size=...):
          -> dense binned spikes DataArray (unit, trial, time) (rate Hz)
             segmented by trial bounds and binned relative to anchor within window/time
+
+    The trials_df can be organized in "wide" or "long" format.
+    
+    Example of "wide" format:
+
+        trial_id | start_time | end_time | go_cue_time | delay_start | delay_end
+        ---------------------------------------------------------------------------
+            1    |     0.0    |   2.0    |     0.5     |     0.7     |   1.5
+            2    |     3.0    |   5.0    |     3.5     |     3.7     |   4.5
+
+    Example of "long" format:
+
+        trial_id | event    | start_time | end_time
+        ---------------------------------------------
+            1    | go_cue   |    0.5     |   0.5
+            1    | delay    |    0.7     |   1.5
+            2    | go_cue   |    3.5     |   3.5
+            2    | delay    |    3.7     |   4.5
+
+    Parameters
+    ----------
+    *dfs : pd.DataFrame
+        One or two DataFrames. If one DataFrame is provided, it is interpreted
+        as either a units table (containing spike times) or a trials/events
+        table. If two DataFrames are provided, one must be a units table and
+        the other a trials table.
+    unit_id_col : str, optional
+        Column name in units_df to use as unit identifiers. If None, uses the
+        DataFrame index (for pandas DataFrames) or row index (for polars DataFrames).
+    trial_id_col : str, optional
+        Column name in trials_df to use as trial identifiers. If None, uses
+        the DataFrame index (for pandas DataFrames) or row index (for polars DataFrames).
+    spike_times_col : str, default="spike_times"
+        Column name in units_df containing spike times (in session time).
+        Each entry should be a 1D array-like of spike times in seconds.
+    trial_start_col : str, default="start_time"
+        Column name in trials_df indicating trial start times (session time).
+    trial_end_col : str, default="end_time"
+        Column name in trials_df indicating trial end times (session time).
+    align_to : str, optional
+        Column name in trials_df to use as the alignment anchor for each
+        trial. If None, defaults to trial_start_col. Spike times will be
+        expressed relative to this anchor.
+    event_cols : dict[str, str], optional
+        Dictionary mapping event names to column names in trials_df for
+        instantaneous events. Only used when a single trials_df is provided
+        (case 2). E.g., {"go_cue": "go_cue_time"}.
+    epoch_cols : dict[str, tuple[str, str]], optional
+        Dictionary mapping epoch names to (start_col, end_col) pairs in
+        trials_df for extended epochs. Only used when a single trials_df is
+        provided (case 2). E.g., {"delay": ("delay_start", "delay_end")}.
+    long_event_col : str, optional
+        Column name in trials_df containing event names in long format. Only
+        used when a single trials_df is provided (case 2).
+    long_time_col : str, optional
+        Column name in trials_df containing event times corresponding to
+        long_event_col. Only used when a single trials_df is provided (case 2).
+    long_end_time_col : str, optional
+        Column name in trials_df containing epoch end times for long format
+        epochs. Only used when a single trials_df is provided (case 2).
+    unit_coords : list[str], optional
+        List of column names from units_df to attach as unit coordinates. If
+        None, all columns except unit_id_col and spike_times_col are included.
+    trial_coords : list[str], optional
+        List of column names from trials_df to attach as trial coordinates. If
+        None, all columns except trial_id_col, trial_start_col, trial_end_col,
+        and align_to are included.
+    bin_size : float, optional
+        Time bin size (in time_unit) for binning spikes. Only relevant when
+        both units_df and trials_df are provided. If None, returns ragged
+        spikes (case 3). If specified, returns dense binned spikes (case 4).
+    window : tuple[float, float], optional
+        Time window (start, end) relative to anchor for extracting spikes,
+        specified in time_unit. Required when bin_size is specified. If None
+        with bin_size=None, uses the full trial duration.
+    time : np.ndarray, optional
+        Custom 1D array of uniformly-spaced time bin centers for binned output.
+        Must have spacing equal to bin_size. If provided, overrides automatic
+        bin center calculation. Only used when bin_size is specified.
+    time_unit : str, default="s"
+        Unit of time for all time-related parameters and output ("s" for
+        seconds, "ms" for milliseconds, etc.).
+    validate : bool, default=True
+        If True, validates the output DataArray against ephys standards using
+        aind_ephys_utils.standards.validate.
+
+    Returns
+    -------
+    xr.DataArray
+        Ephys data as an xarray DataArray with appropriate dimensions, 
+        coordinates, and metadata attributes.
+
+    Raises
+    ------
+    FromDataFrameError
+        If inputs cannot be interpreted or validated, including:
+        - Wrong number of DataFrames (must be 1 or 2)
+        - Missing required columns
+        - Invalid spike times format
+        - Trial boundaries contain NaNs or invalid values
+        - bin_size specified without window (when time is not provided)
+        - time array is not uniformly spaced or doesn't match bin_size
+
+    Examples
+    --------
+    Case 1: Units only (session time)
+    >>> spikes = from_dataframe(units_df)
+
+    Case 2: Events/epochs from trials
+    >>> events = from_dataframe(trials_df)
+
+    Case 3: Units + trials (ragged, trial time)
+    >>> spikes = from_dataframe(units_df, trials_df, align_to="stim_onset")
+
+    Case 4: Units + trials (binned, trial time)
+    >>> spikes = from_dataframe(
+    ...     units_df, trials_df,
+    ...     bin_size=0.01, window=(-0.5, 1.0), align_to="stim_onset"
+    ... )
     """
     if len(dfs) == 0 or len(dfs) > 2:
         raise FromDataFrameError("from_dataframe expects 1 or 2 DataFrames.")
@@ -636,6 +802,8 @@ def from_dataframe(
             time_unit=time_unit,
             timebase="session",
         )
+        if validate:
+            validate_xarray(events)
         return events
 
     # len(dfs) == 2: determine which is units vs trials by presence of spike_times_col

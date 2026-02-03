@@ -74,3 +74,140 @@ class AdapterTest(unittest.TestCase):
         events = from_dataframe(trials_df, trial_id_col="trial_id")
         self.assertEqual(events.dims, ("trial", "event", "bound"))
         self.assertIn("go_cue", list(events["event"].values))
+
+    def test_from_dataframe_events_wide_format(self) -> None:
+        """Build events DataArray from wide-format trials DataFrame."""
+        trials_df = pd.DataFrame(
+            {
+                "trial_id": [0, 1],
+                "go_cue_time": [0.1, 1.1],
+                "delay_start": [0.15, 1.15],
+                "delay_end": [0.4, 1.4],
+            }
+        )
+        events = from_dataframe(trials_df, trial_id_col="trial_id")
+        
+        # Check dimensions
+        self.assertEqual(events.dims, ("trial", "event", "bound"))
+        self.assertEqual(events.shape, (2, 2, 2))  # 2 trials, 2 events, 2 bounds
+        
+        # Check event names
+        event_names = list(events["event"].values)
+        self.assertIn("go_cue", event_names)
+        self.assertIn("delay", event_names)
+        
+        # Check instantaneous event (go_cue)
+        go_cue_idx = event_names.index("go_cue")
+        np.testing.assert_allclose(
+            events.values[:, go_cue_idx, 0], [0.1, 1.1]
+        )
+        np.testing.assert_allclose(
+            events.values[:, go_cue_idx, 1], [0.1, 1.1]
+        )
+        
+        # Check epoch (delay)
+        delay_idx = event_names.index("delay")
+        np.testing.assert_allclose(
+            events.values[:, delay_idx, 0], [0.15, 1.15]
+        )
+        np.testing.assert_allclose(
+            events.values[:, delay_idx, 1], [0.4, 1.4]
+        )
+
+    def test_from_dataframe_events_long_format(self) -> None:
+        """Build events DataArray from long-format trials DataFrame.
+        
+        Long format groups multiple event rows by trial_id.
+        """
+        trials_df = pd.DataFrame(
+            {
+                "trial_id": [0, 0, 1, 1],
+                "event_name": ["go_cue", "delay", "go_cue", "delay"],
+                "event_time": [0.1, 0.15, 1.1, 1.15],
+                "event_end": [0.1, 0.4, 1.1, 1.4],
+            }
+        )
+        events = from_dataframe(
+            trials_df,
+            trial_id_col="trial_id",
+            long_event_col="event_name",
+            long_time_col="event_time",
+            long_end_time_col="event_end",
+        )
+        
+        # Check dimensions
+        self.assertEqual(events.dims, ("trial", "event", "bound"))
+        # 2 unique trials, 2 events, 2 bounds
+        self.assertEqual(events.shape, (2, 2, 2))
+        
+        # Check event names preserved in order
+        event_names = list(events["event"].values)
+        self.assertIn("go_cue", event_names)
+        self.assertIn("delay", event_names)
+        
+        # Check instantaneous event (go_cue)
+        go_cue_idx = event_names.index("go_cue")
+        np.testing.assert_allclose(
+            events.values[:, go_cue_idx, 0], [0.1, 1.1]
+        )
+        np.testing.assert_allclose(
+            events.values[:, go_cue_idx, 1], [0.1, 1.1]
+        )
+        
+        # Check epoch (delay)
+        delay_idx = event_names.index("delay")
+        np.testing.assert_allclose(
+            events.values[:, delay_idx, 0], [0.15, 1.15]
+        )
+        np.testing.assert_allclose(
+            events.values[:, delay_idx, 1], [0.4, 1.4]
+        )
+
+    def test_from_dataframe_events_long_vs_wide_equivalence(self) -> None:
+        """Verify long and wide format produce equivalent results."""
+        # Wide format
+        wide_df = pd.DataFrame(
+            {
+                "trial_id": [0, 1],
+                "go_cue_time": [0.1, 1.1],
+                "delay_start": [0.15, 1.15],
+                "delay_end": [0.4, 1.4],
+            }
+        )
+        
+        # Long format
+        long_df = pd.DataFrame(
+            {
+                "trial_id": [0, 0, 1, 1],
+                "event_name": ["go_cue", "delay", "go_cue", "delay"],
+                "event_time": [0.1, 0.15, 1.1, 1.15],
+                "event_end": [0.1, 0.4, 1.1, 1.4],
+            }
+        )
+        
+        wide_events = from_dataframe(wide_df, trial_id_col="trial_id")
+        long_events = from_dataframe(
+            long_df,
+            trial_id_col="trial_id",
+            long_event_col="event_name",
+            long_time_col="event_time",
+            long_end_time_col="event_end",
+        )
+        
+        # Check shapes match
+        self.assertEqual(wide_events.shape, long_events.shape)
+        
+        # Check event names match (may be in different order)
+        wide_event_names = set(wide_events["event"].values)
+        long_event_names = set(long_events["event"].values)
+        self.assertEqual(wide_event_names, long_event_names)
+        
+        # Check values match for each event
+        for event_name in wide_event_names:
+            wide_vals = wide_events.sel(event=event_name).values
+            long_vals = long_events.sel(event=event_name).values
+            np.testing.assert_allclose(
+                wide_vals, long_vals,
+                err_msg=f"Mismatch for event {event_name}"
+            )
+
