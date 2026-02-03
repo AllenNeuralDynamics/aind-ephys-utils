@@ -266,17 +266,25 @@ def _build_events(  # noqa: C901
         seen_trials = set()
         for tid in trial_ids:
             # Handle potential non-hashable types
-            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            tid_key = (
+                tid
+                if np.isscalar(tid)
+                else tuple(tid) if hasattr(tid, "__iter__") else tid
+            )
             if tid_key not in seen_trials:
                 unique_trial_ids.append(tid)
                 seen_trials.add(tid_key)
         unique_trial_ids = np.asarray(unique_trial_ids)
         n_trials = len(unique_trial_ids)
-        
+
         # Create mapping from trial_id to index
         trial_to_idx = {}
         for i, tid in enumerate(unique_trial_ids):
-            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            tid_key = (
+                tid
+                if np.isscalar(tid)
+                else tuple(tid) if hasattr(tid, "__iter__") else tid
+            )
             trial_to_idx[tid_key] = i
 
         # Preserve event label order
@@ -287,9 +295,7 @@ def _build_events(  # noqa: C901
                 event_names.append(v)
                 seen_events.add(v)
 
-        data = np.full(
-            (n_trials, len(event_names), 2), np.nan, dtype=float
-        )
+        data = np.full((n_trials, len(event_names), 2), np.nan, dtype=float)
         ev_to_i = {ev: i for i, ev in enumerate(event_names)}
 
         t_start = _col_to_float_numpy(trials_df, long_time_col)
@@ -298,12 +304,16 @@ def _build_events(  # noqa: C901
         else:
             t_end = t_start
 
-        # Build mapping from trial_id to first row index for metadata extraction
+        # Build mapping from trial_id to first row index for metadata
         trial_id_to_first_row = {}
         all_trial_ids = _get_ids(trials_df, trial_id_col, "trial")
         for r in range(len(trials_df)):
             tid = all_trial_ids[r]
-            tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+            tid_key = (
+                tid
+                if np.isscalar(tid)
+                else tuple(tid) if hasattr(tid, "__iter__") else tid
+            )
             if tid_key not in trial_id_to_first_row:
                 trial_id_to_first_row[tid_key] = r
             ti = trial_to_idx[tid_key]
@@ -311,7 +321,7 @@ def _build_events(  # noqa: C901
             ei = ev_to_i[ev]
             data[ti, ei, 0] = t_start[r]
             data[ti, ei, 1] = t_end[r]
-        
+
         # Override trial_ids with unique ones for the DataArray
         trial_ids = unique_trial_ids
 
@@ -342,7 +352,7 @@ def _build_events(  # noqa: C901
             te = _col_to_float_numpy(trials_df, ec)
             data[:, off + j, 0] = ts
             data[:, off + j, 1] = te
-        
+
         # Get trial_ids for wide format
         trial_ids = _get_ids(trials_df, trial_id_col, "trial")
 
@@ -385,14 +395,20 @@ def _build_events(  # noqa: C901
         for c in trial_coords:
             coord_values = np.empty(len(trial_ids), dtype=object)
             for i, tid in enumerate(trial_ids):
-                tid_key = tid if np.isscalar(tid) else tuple(tid) if hasattr(tid, '__iter__') else tid
+                tid_key = (
+                    tid
+                    if np.isscalar(tid)
+                    else tuple(tid) if hasattr(tid, "__iter__") else tid
+                )
                 row_idx = trial_id_to_first_row[tid_key]
                 coord_values[i] = _get_cell(trials_df, row_idx, c)
             events = events.assign_coords({c: (C.trial, coord_values)})
     else:
         # For wide format, use all rows directly
         for c in trial_coords:
-            events = events.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
+            events = events.assign_coords(
+                {c: (C.trial, trials_df[c].to_numpy())}
+            )
 
     return events
 
@@ -654,7 +670,7 @@ def from_dataframe(
             segmented by trial bounds and binned relative to anchor within window/time
 
     The trials_df can be organized in "wide" or "long" format.
-    
+
     Example of "wide" format:
 
         trial_id | start_time | end_time | go_cue_time | delay_start | delay_end
@@ -741,7 +757,7 @@ def from_dataframe(
     Returns
     -------
     xr.DataArray
-        Ephys data as an xarray DataArray with appropriate dimensions, 
+        Ephys data as an xarray DataArray with appropriate dimensions,
         coordinates, and metadata attributes.
 
     Raises

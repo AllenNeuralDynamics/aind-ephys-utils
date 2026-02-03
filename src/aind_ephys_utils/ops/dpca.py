@@ -249,7 +249,7 @@ class dPCA(BaseEstimator):
         for j, lam in enumerate(lams):
             self.regularizer = lam
             for i in range(self.n_trials):
-                trainX = X[..., :n_unq - 1]
+                trainX = X[..., : n_unq - 1]
                 validX = X[..., n_unq - 1:]
                 trainmXs, _ = (
                     self._marginalize(trainX),
