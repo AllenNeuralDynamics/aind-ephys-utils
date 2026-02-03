@@ -92,8 +92,7 @@ class EphysDataArrayAccessor:
             "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
             "  - da.ephys.normalize(dim='trial', method='zscore')\n"
             "  - da.ephys.psth(dim='trial', reduce='mean')\n"
-            "  - da.ephys.reduce(method='pca', dim='unit', n_components=10,\n"
-            "    stack=('trial','time'))\n"
+            "  - da.ephys.reduce(method='pca', dim='unit', n_components=10)\n"
             "  - da.ephys.restrict(window=(-0.5, 1.0))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
         )

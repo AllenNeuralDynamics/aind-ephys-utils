@@ -1,4 +1,4 @@
-"""Pandas -> xarray ingestion for ephys analysis.
+"""Pandas/Polars -> xarray ingestion for ephys analysis.
 
 This module implements `from_dataframe`, an adapter that converts one or two
 pandas DataFrames into canonical xarray objects.
@@ -16,7 +16,8 @@ Supported patterns
 
 3) `from_dataframe(units_df, trials_df)`:
    Segment per-unit session spike times by trial boundaries and express spikes
-   in trial time relative to an anchor (by default, the trial start).
+   in trial time relative to an anchor (by default, the values in the
+   `start_time` column).
 
 The resulting DataArrays are validated by `aind_ephys_utils.standards.validate` when
 `validate=True`.
@@ -130,6 +131,98 @@ def _infer_wide_event_cols(
             event_cols[name] = c
 
     return event_cols, epoch_cols
+
+
+def _col_to_float_numpy(df, col):
+    """Return column as float numpy array with coercion."""
+    if col not in df.columns:
+        raise KeyError(f"{col} not in DataFrame")
+
+    s = df[col]
+
+    # ---- pandas ----
+    try:
+        import pandas as pd
+
+        if isinstance(s, pd.Series):
+            return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
+    except ImportError:
+        pass
+
+    # ---- polars ----
+    try:
+        import polars as pl
+
+        if isinstance(s, pl.Series):
+            return (
+                s.cast(
+                    pl.Float64, strict=False
+                )  # coercion like errors="coerce"
+                .to_numpy()
+                .astype(float)
+            )
+    except ImportError:
+        pass
+
+    # ---- fallback (numpy / list-like) ----
+    return np.asarray(s, dtype=float)
+
+
+def _infer_window_from_time(
+    time: np.ndarray, *, bin_size: float
+) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """Validate time centers and derive the corresponding binning window."""
+    centers = np.asarray(time, dtype=float)
+    if centers.ndim != 1 or centers.size < 2:
+        raise FromDataFrameError(
+            "time must be a 1D array with at least 2 points."
+        )
+    dt = float(centers[1] - centers[0])
+    if not np.allclose(np.diff(centers), dt):
+        raise FromDataFrameError(
+            "time vector must be uniformly spaced for binning."
+        )
+    if not np.isclose(dt, bin_size):
+        raise FromDataFrameError(
+            "time spacing must match bin_size when time is provided."
+        )
+    window = (centers[0] - dt / 2, centers[-1] + dt / 2)
+    return centers, window
+
+
+def _get_cell(df, row_idx: int, col: str):
+    """Returns a cell from a Pandas or Polars DataFrame"""
+    # pandas
+    if hasattr(df, "iloc"):
+        return df.iloc[row_idx][col]
+    # polars
+    return df.row(row_idx, named=True)[col]
+
+
+def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
+    """Infer a (tmin, tmax) interval from ragged spike entries."""
+    tmin = np.inf
+    tmax = -np.inf
+    for x in da.data.ravel():
+        if x is None:
+            continue
+        arr = np.asarray(x, dtype=float)
+        if arr.size == 0:
+            continue
+        tmin = min(tmin, float(arr.min()))
+        tmax = max(tmax, float(arr.max()))
+    if not np.isfinite(tmin) or not np.isfinite(tmax):
+        raise FromDataFrameError(
+            "Cannot infer valid interval from empty spikes."
+        )
+    if tmin == tmax:
+        tmax = tmin + 1e-6
+    return tmin, tmax
+
+
+def _looks_like_units_df(df: pd.DataFrame, spike_times_col: str) -> bool:
+    """Heuristic check for whether a DataFrame looks like a units/spikes table."""
+    return spike_times_col in df.columns
 
 
 def _build_events(  # noqa: C901
@@ -259,72 +352,6 @@ def _build_events(  # noqa: C901
     return events
 
 
-def _col_to_float_numpy(df, col):
-    """Return column as float numpy array with coercion."""
-    if col not in df.columns:
-        raise KeyError(f"{col} not in DataFrame")
-
-    s = df[col]
-
-    # ---- pandas ----
-    try:
-        import pandas as pd
-
-        if isinstance(s, pd.Series):
-            return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
-    except ImportError:
-        pass
-
-    # ---- polars ----
-    try:
-        import polars as pl
-
-        if isinstance(s, pl.Series):
-            return (
-                s.cast(
-                    pl.Float64, strict=False
-                )  # coercion like errors="coerce"
-                .to_numpy()
-                .astype(float)
-            )
-    except ImportError:
-        pass
-
-    # ---- fallback (numpy / list-like) ----
-    return np.asarray(s, dtype=float)
-
-
-def _infer_window_from_time(
-    time: np.ndarray, *, bin_size: float
-) -> Tuple[np.ndarray, Tuple[float, float]]:
-    """Validate time centers and derive the corresponding binning window."""
-    centers = np.asarray(time, dtype=float)
-    if centers.ndim != 1 or centers.size < 2:
-        raise FromDataFrameError(
-            "time must be a 1D array with at least 2 points."
-        )
-    dt = float(centers[1] - centers[0])
-    if not np.allclose(np.diff(centers), dt):
-        raise FromDataFrameError(
-            "time vector must be uniformly spaced for binning."
-        )
-    if not np.isclose(dt, bin_size):
-        raise FromDataFrameError(
-            "time spacing must match bin_size when time is provided."
-        )
-    window = (centers[0] - dt / 2, centers[-1] + dt / 2)
-    return centers, window
-
-
-def _get_cell(df, row_idx: int, col: str):
-    """Returns a cell from a Pandas or Polars DataFrame"""
-    # pandas
-    if hasattr(df, "iloc"):
-        return df.iloc[row_idx][col]
-    # polars
-    return df.row(row_idx, named=True)[col]
-
-
 def _build_spikes_units_only(
     units_df: pd.DataFrame,
     *,
@@ -334,7 +361,6 @@ def _build_spikes_units_only(
     time_unit: str,
 ) -> xr.DataArray:
     """
-    Case 1: only units_df passed.
     Return ragged (unit, trial) with trial=[0].
     Spike times are *session time*.
     """
@@ -397,7 +423,7 @@ def _build_spikes_with_trials(  # noqa: C901
     time_unit: str,
 ) -> xr.DataArray:
     """
-    Case 3/4: units_df + trials_df.
+    units_df + trials_df as input
     - no bin_size -> ragged (unit, trial) relative to anchor (default trial_start)
     - bin_size    -> dense  (unit, trial, time) binned relative to anchor
       within window/time
@@ -528,32 +554,6 @@ def _build_spikes_with_trials(  # noqa: C901
     ]
 
     return da
-
-
-def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
-    """Infer a (tmin, tmax) interval from ragged spike entries."""
-    tmin = np.inf
-    tmax = -np.inf
-    for x in da.data.ravel():
-        if x is None:
-            continue
-        arr = np.asarray(x, dtype=float)
-        if arr.size == 0:
-            continue
-        tmin = min(tmin, float(arr.min()))
-        tmax = max(tmax, float(arr.max()))
-    if not np.isfinite(tmin) or not np.isfinite(tmax):
-        raise FromDataFrameError(
-            "Cannot infer valid interval from empty spikes."
-        )
-    if tmin == tmax:
-        tmax = tmin + 1e-6
-    return tmin, tmax
-
-
-def _looks_like_units_df(df: pd.DataFrame, spike_times_col: str) -> bool:
-    """Heuristic check for whether a DataFrame looks like a units/spikes table."""
-    return spike_times_col in df.columns
 
 
 # -----------------------------
