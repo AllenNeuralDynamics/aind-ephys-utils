@@ -370,14 +370,15 @@ def _plot_raster_on_axis(  # noqa: C901
                     )
 
                 y0 += len(seq)
-                unit_end = y0
-                if show_unit_labels:
-                    unit_centers.append((unit_start + unit_end) / 2)
-                    if C.unit in spikes.dims:
-                        unit_labels.append(str(spikes[C.unit].values[ui]))
-                    else:
-                        unit_labels.append("unit")
-                y0 += unit_gap if ui < len(per_unit) - 1 else 0
+
+            unit_end = y0
+            if show_unit_labels:
+                unit_centers.append((unit_start + unit_end) / 2)
+                if C.unit in spikes.dims:
+                    unit_labels.append(str(spikes[C.unit].values[ui]))
+                else:
+                    unit_labels.append("unit")
+            y0 += unit_gap if ui < len(per_unit) - 1 else 0
 
     if tlim is not None:
         ax.set_xlim(tlim)
