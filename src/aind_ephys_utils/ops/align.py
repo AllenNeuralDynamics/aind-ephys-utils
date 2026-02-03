@@ -71,25 +71,130 @@ def _get_event_times(events: xr.Dataset, to: str) -> xr.DataArray:
     """
     t = events[C.event_time_var]
     if C.event not in t.dims:
-        msg = (
+        raise EphysAlignError(
             f"events['{C.event_time_var}'] must have a '{C.event}' dimension. "
             f"Got dims {t.dims}."
         )
-        raise EphysAlignError(msg)
-    if to not in t.coords.get(C.event, []):
-        # coords might not exist; try fallback on indexes
-        try:
-            _ = t.sel({C.event: to})
-        except Exception as e:
-            msg = (
-                f"Could not find event label {to!r} in "
-                f"events['{C.event_time_var}']."
-            )
-            raise EphysAlignError(msg) from e
-    return t.sel({C.event: to})  # dims (trial,)
+    try:
+        return t.sel({C.event: to})
+    except KeyError as e:
+        raise EphysAlignError(
+            f"Could not find event label {to!r} in "
+            f"events['{C.event_time_var}']."
+        ) from e
 
 
-def align(  # noqa: C901
+def _finalize_output(
+    da: xr.DataArray, out: xr.DataArray, window: Tuple[float, float]
+) -> xr.DataArray:
+    """Apply common output processing: attrs, coords, valid_intervals."""
+    out.attrs = dict(da.attrs)
+    out = preserve_coords(da, out)
+    out.attrs[C.attr_valid_intervals] = [window]
+    return out
+
+
+def _align_continuous(
+    da: xr.DataArray, t0: xr.DataArray, window: Tuple[float, float]
+) -> xr.DataArray:
+    """Align continuous/binned data to event times."""
+    tmin, tmax = window
+
+    if C.trial in da.dims:
+        # Trial-wise data: assume time coords are already trial-relative.
+        # Slice to window.
+        time = da[C.time].values
+        mask = (time >= tmin) & (time <= tmax)
+        return da.sel({C.time: time[mask]})
+
+    # No trial dim: single continuous trace with scalar event time
+    if t0.size != 1:
+        raise EphysAlignError(
+            "Aligning a no-trial DataArray requires a single event time "
+            "(trial size 1)."
+        )
+    t0_scalar = float(t0.values.flat[0])
+    aligned_time = da[C.time].values - t0_scalar
+    return da.assign_coords({C.time: aligned_time}).sel(
+        {C.time: slice(tmin, tmax)}
+    )
+
+
+def _align_unit(
+    all_spikes: object,
+    t0_vals: np.ndarray,
+    tmin: float,
+    tmax: float,
+) -> np.ndarray:
+    """Align spikes for a single unit across all trials.
+
+    Returns an object array of shape (n_trials,) with aligned spike times.
+    """
+    n_trials = len(t0_vals)
+    out = np.empty(n_trials, dtype=object)
+
+    if all_spikes is None:
+        for i in range(n_trials):
+            out[i] = np.array([], dtype=float)
+        return out
+
+    arr = np.asarray(all_spikes, dtype=float)
+    if arr.size == 0:
+        for i in range(n_trials):
+            out[i] = np.array([], dtype=float)
+        return out
+
+    # Vectorized searchsorted: find all boundaries at once
+    lo_bounds = t0_vals + tmin
+    hi_bounds = t0_vals + tmax
+    all_lo = np.searchsorted(arr, lo_bounds)
+    all_hi = np.searchsorted(arr, hi_bounds)
+
+    # Slice and shift for each trial (can't vectorize due to ragged output)
+    for i in range(n_trials):
+        out[i] = arr[all_lo[i]: all_hi[i]] - t0_vals[i]
+
+    return out
+
+
+def _align_ragged(
+    da: xr.DataArray,
+    t0: xr.DataArray,
+    window: Tuple[float, float],
+) -> xr.DataArray:
+    """Align ragged spike data to event times.
+
+    Input da has shape (1, n_units) where da[0, u] contains all spikes for
+    unit u. Output has shape (n_trials, n_units) with spikes sliced around
+    each event time.
+
+    Uses vectorized searchsorted for efficient boundary finding across all
+    trials simultaneously.
+    """
+    tmin, tmax = window
+    t0_vals = t0.values.astype(float)
+    n_units = da.sizes[C.unit]
+
+    # Process each unit with vectorized searchsorted
+    results = [
+        _align_unit(
+            da.isel({C.trial: 0, C.unit: u}).item(), t0_vals, tmin, tmax
+        )
+        for u in range(n_units)
+    ]
+
+    # Stack results: each is (n_trials,), stack to (n_trials, n_units)
+    out_data = np.column_stack(results)
+
+    return xr.DataArray(
+        out_data,
+        dims=(C.trial, C.unit),
+        coords={C.trial: t0[C.trial], C.unit: da[C.unit]},
+        name=da.name,
+    )
+
+
+def align(
     da: xr.DataArray,
     *,
     events: Union[xr.Dataset, xr.DataArray],
@@ -99,108 +204,37 @@ def align(  # noqa: C901
     """
     Align a DataArray to an event and extract a time window around it.
 
-    - Continuous: returns da with time shifted so event is at 0, and sliced to window.
-    - Ragged spikes: subtract event time per trial, filter to window, return ragged.
+    - Continuous/binned: returns da with time shifted so event is at 0,
+      sliced to window.
+    - Ragged spikes: subtract event time per trial, filter to window.
     """
     validate(da)
     events = _normalize_events(events)
-    t0 = _get_event_times(events, to=to)  # (trial,)
+    t0 = _get_event_times(events, to=to)
 
-    kind = infer_kind(da)
     tmin, tmax = window
     if tmin >= tmax:
         raise EphysAlignError(
             f"window must be (min,max) with min < max, got {window}."
         )
 
+    kind = infer_kind(da)
+
     if kind in ("continuous", "binned"):
-        # We assume da has dims including 'trial' and 'time' OR just 'time'.
         if C.time not in da.dims:
             raise EphysAlignError(
                 "Continuous/binned alignment requires a time dimension."
             )
+        out = _align_continuous(da, t0, window)
 
-        if C.trial in da.dims:
-            # Broadcast subtract per-trial t0 from time coordinate to get aligned time.
-            # We'll create an aligned time coordinate for each trial by shifting
-            # the data via interpolation.
-            #
-            # Simple approach: for each trial, reindex/interp onto a common
-            # aligned time grid.
-            time = da[C.time].values
-            # Assume time already relative per trial; if not, adjust upstream.
-            aligned_time = time
-            # If time is absolute, you'd want aligned_time = time - t0(trial).
-            # That becomes a 2D time coord. To keep things simple and
-            # memorable, v0 assumes trial-wise time coords are already in
-            # trial-time. Users can convert session->trial before using align,
-            # or add a session-time mode later.
-
-            # Slice window
-            mask = (aligned_time >= tmin) & (aligned_time <= tmax)
-            out = da.sel({C.time: aligned_time[mask]})
-            out = out.assign_coords(
-                {C.time: out[C.time].values - 0.0}
-            )  # explicit no-op placeholder
-            out.attrs = dict(da.attrs)
-            out = preserve_coords(da, out)
-            out.attrs[C.attr_valid_intervals] = [window]
-            return out
-
-        else:
-            # No trial dim: interpret as a single continuous trace with event time scalar
-            if t0.size != 1:
-                msg = (
-                    "Aligning a no-trial DataArray requires a single event time "
-                    "(trial size 1)."
-                )
-                raise EphysAlignError(msg)
-            t0_scalar = float(t0.values)
-            aligned_time = da[C.time].values - t0_scalar
-            out = da.assign_coords({C.time: aligned_time}).sel(
-                {C.time: slice(tmin, tmax)}
-            )
-            out.attrs = dict(da.attrs)
-            out = preserve_coords(da, out)
-            out.attrs[C.attr_valid_intervals] = [window]
-            return out
-
-    if kind == "spikes_ragged":
-        # da dims include (trial, unit), each entry is array of spike times.
+    elif kind == "spikes_ragged":
         if C.trial not in da.dims:
             raise EphysAlignError(
                 "Ragged spikes alignment requires a 'trial' dimension."
             )
+        out = _align_ragged(da, t0, window)
 
-        def _align_entry(spk: object, trial_start: float) -> np.ndarray:
-            """Align a single ragged spike array for one (trial, unit) entry."""
-            if spk is None:
-                return np.asarray([], dtype=float)
-            arr = np.asarray(spk, dtype=float)
-            start_index = np.searchsorted(arr, trial_start + tmin)
-            end_index = np.searchsorted(arr, trial_start + tmax)
-            return arr[start_index:end_index] - trial_start
+    else:
+        raise EphysAlignError(f"Unsupported kind {kind!r} for align.")
 
-        # Output as (trial, unit)
-        out_tf = np.empty((len(t0.values), len(da[C.unit])), dtype=object)
-        for u in range(da.sizes[C.unit]):
-            spks = da.isel({C.unit: u}).data[0]
-            for t in range(len(t0.values)):
-                trial_start = float(t0.values[t])
-                out_tf[t, u] = _align_entry(spks, trial_start)
-
-        out_da = xr.DataArray(
-            out_tf,
-            dims=(C.trial, C.unit),
-            coords={C.trial: t0[C.trial], C.unit: da[C.unit]},
-            name=da.name,
-            attrs=dict(da.attrs),
-        )
-        # Restore original dim order if needed
-        out_da = out_da.transpose(*da.dims)
-        out_da = preserve_coords(da, out_da)
-        out_da.attrs[C.attr_valid_intervals] = [window]
-
-        return out_da
-
-    raise EphysAlignError(f"Unsupported kind {kind!r} for align.")
+    return _finalize_output(da, out, window)

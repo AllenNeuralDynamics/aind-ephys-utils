@@ -11,7 +11,7 @@ from aind_ephys_utils.adapters import from_dataframe
 class AdapterTest(unittest.TestCase):
     """Ensure adapter ops path works end-to-end."""
 
-    def test_from_dataframe_bin_uses_ops(self) -> None:
+    def test_from_dataframe_bin(self) -> None:
         """Use ops-based align/bin path for dataframe ingestion."""
         units_df = pd.DataFrame(
             {
@@ -40,10 +40,10 @@ class AdapterTest(unittest.TestCase):
             time_unit="s",
         )
 
-        self.assertEqual(da.dims, ("unit", "trial", "time"))
-        self.assertEqual(da.shape, (1, 2, 3))
+        self.assertEqual(da.dims, ("trial", "unit", "time"))
+        self.assertEqual(da.shape, (2, 1, 3))
         np.testing.assert_allclose(da.values[0, 0], [0.0, 10.0, 10.0])
-        np.testing.assert_allclose(da.values[0, 1], [0.0, 10.0, 0.0])
+        np.testing.assert_allclose(da.values[1, 0], [0.0, 10.0, 0.0])
 
     def test_from_dataframe_units_only(self) -> None:
         """Create ragged spikes from a units-only DataFrame."""
