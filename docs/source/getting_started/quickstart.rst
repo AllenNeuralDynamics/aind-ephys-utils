@@ -6,7 +6,7 @@ This quickstart shows the minimal flow from raw spike times to plots.
 Install
 -------
 
-The library can be installed via ``pip``. It only has three dependencies: ``xarray`` (for core data structures), ``scikit-learn`` (for dimensionality reduction methods), and ``ipympl`` (for interactive plotting).
+The library can be installed via ``pip``. It only has three dependencies: ``xarray`` (for core data structures), ``scikit-learn`` (for dimensionality reduction methods), and ``ipympl`` (for interactive plotting with ``matplotlib``).
 
 .. code-block:: bash
 
@@ -15,7 +15,7 @@ The library can be installed via ``pip``. It only has three dependencies: ``xarr
 Load and convert
 ----------------
 
-To start working with spike data, it needs to be stored in a ``DataArray`` with the correct format. If you already have your spikes and trials in Pandas ``DataFrames`` (e.g., loaded from an NWB file), generating the appropriate data structure is straigtforward:
+To start working with spike data, it needs to be stored in a ``DataArray`` with the correct format. If you already have your spikes in Panda ``DataFrames`` with a ``spike_times`` columns (e.g., loaded from an NWB file), generating the appropriate data structure is straightforward:
 
 .. code-block:: python
 
@@ -52,10 +52,10 @@ Once your data is in the right format, you can use ``xarray`` operations to filt
         drop=True) # filter out miss trials
 
 
-Align, bin, plot
-----------------
+Bin, smooth, plot
+------------------
 
-Now you can perform operations (e.g. binning and smoothing) on the output and plot the results. Note that all ``aind-ephys-utils`` methods are available via the ``ephys`` accessor, whereas built-in ``xarray`` methods can be called directly on the ``DataArray``.
+Now you can perform operations (e.g. binning and smoothing) on the output and plot the results. All ``aind-ephys-utils`` methods are available via the ``ephys`` accessor, whereas built-in Xarray methods can be called directly on the ``DataArray`` object.
 
 .. code-block:: python
 
@@ -66,5 +66,5 @@ Next steps
 ----------
 
 - Read :doc:`/concepts/data_model` for the expected shapes.
-- Read :doc:`/concepts/xarray_primer` for essential xarray concepts.
+- Read :doc:`/concepts/xarray_primer` for essential Xarray concepts.
 - Explore :doc:`/ops/index` for each operation and usage examples.

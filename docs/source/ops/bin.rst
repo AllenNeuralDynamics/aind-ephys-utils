@@ -1,8 +1,7 @@
 bin
 ===
 
-Bin ragged spikes into a dense rate array. Output values are rates (Hz) by
-default.
+Bin ragged spikes into a dense array of firing rates in Hz.
 
 Example
 -------

@@ -3,23 +3,21 @@ Design principles
 
 This library is designed to be:
 
-- **Composable** with xarray: ops return ``DataArrays`` or ``Datasets`` and can be
-  chained with ``.sel``, ``.mean``, ``.groupby``, and friends.
-- **Explicit** about dims and metadata: dims and coords are named, attrs carry
-  timebase, units, and valid intervals.
-- **Minimal** and testable: small functions, predictable outputs, no hidden
+- **Composable**: all operations return ``DataArrays`` or ``Datasets`` and can be chained with ``.sel``, ``.mean``, ``.groupby``, and other built-in Xarray methods.
+- **Minimal**: small functions, predictable outputs, no hidden
   global state.
-- **Practical** for exploratory work: common analysis flows are short and
+- **Practical**: common analysis workflows are short and
   readable.
 
 Package layers
 --------------
 
-- ``adapters``: convert external data into canonical ``DataArrays``.
-- ``standards``: conventions and validation of shapes/metadata.
-- ``ops``: pure, composable operations (no plotting, no I/O).
-- ``plots``: visualization helpers only.
-- ``accessors``: ergonomic entry point via ``da.ephys``.
+- ``accessors``: ergonomic entry point via ``da.ephys``
+- ``adapters``: convert external data into canonical ``DataArrays``
+- ``standards``: conventions and validation of shapes/metadata
+- ``ops``: pure, composable operations (no plotting, no I/O)
+- ``plots``: code for visualization
+- ``metrics``: (coming soon)
 
 Data model assumptions
 ----------------------

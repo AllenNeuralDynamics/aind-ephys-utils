@@ -3,38 +3,41 @@ reduce
 
 Dimensionality reduction and supervised projections.
 
-Example
--------
+Example: PCA
+---------------------
+
+PCA works on any ``DataArray`` with dimensions of ``(trials, units, time)``. If the ``'n_components'`` input argument is not specified, it will return 5 components by default.
 
 .. code-block:: python
 
-   ds = da.ephys.reduce(method="pca_time", n_components=5)
-   proj = ds["projections"] if isinstance(ds, xr.Dataset) else ds
+   ds = da.ephys.reduce(method="pca")
+   proj = ds["projections"]
+   w = ds["weights"]
 
-Supervised example
------------------
+Example: Supervised methods
+----------------------------
+
+Supervised methods work on any ``DataArray`` with dimensions of ``(trials, units, time)``. They require a ``'labels'`` input argument that specifies which coordinate should be used for grouping data. A ``'window'`` can optionally be specified to restrict the computation to a certain segment of the data. If there are multiple labels or multiple windows specified, the outputs can be orthogonalized using the ``'qr'`` (Gram-Schmidt process) or ``'svd'`` (singular value decomposition) methods. 
 
 .. code-block:: python
 
    ds = da.ephys.reduce(
-       method="logistic",
-       dim="unit",
-       labels=labels,
-       stack=("trial", "time"),
+       method="lda",
+       labels=['choice', 'stimulus'],
        window=(-0.2, 0.0),
        orthogonalize="qr",
    )
 
-Methods
--------
+Available supervised methods are:
 
-- ``pca``, ``pca_trials``, ``pca_time``
-- ``dpca`` (returns per-marginal projections)
-- ``coding_direction``, ``logistic``, ``lda``
-- ``rrr`` (reduced-rank regression)
+* ``'dpca'``: Demixed principal component analysis
 
-Notes
------
+* ``'coding_direction'``: Coding direction
 
-- For PCA, ``return_dataset=True`` adds explained variance and weights.
-- Supervised methods return a ``Dataset`` with ``projections`` and ``weights``.
+* ``'logistic'``: Logistic regression
+
+* ``'lda'``: Linear discriminant analysis
+
+* ``'rrr'``: Reduced rank regression
+
+

@@ -1,4 +1,4 @@
-Restrict
+restrict
 ========
 
 ``restrict`` crops data to a time window. It supports both dense time series

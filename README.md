@@ -6,24 +6,22 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
+![Logo](docs/source/_static/aind-ephys-utils.png)
+
+## Installation
+
+```bash
+pip install aind-ephys-utils
+```
+
+
 ## Usage
 
-This package is built around a single idea: 
-
-Convert common neuroscience data tables into well-structured `xarray.DataArrays`, then do everything else in Xarray.
-
-It supports:
-- aligning spikes to events
-- standard plots (rasters, PSTHs)
-- population analyses (e.g. PCA)
-
-### Core design principles
-
-All analysis happens on `xarray.DataArray` objects with labeled dimensions and coordinates, via the `ephys` accessor:
+All analysis happens on [Xarray](https://docs.xarray.dev/en/stable/) `DataArray` objects with labeled dimensions and coordinates, via the `ephys` accessor:
 - `da.ephys.align(...)`
 - `da.ephys.reduce(...)`
-- `da.ephys.raster(...)`
 - `da.ephys.psth(...)`
+- `da.ephys.plot.raster(...)`
 
 This allows functions to be run in sequence and combined with built-in Xarray functions, e.g.:
 
@@ -31,15 +29,70 @@ This allows functions to be run in sequence and combined with built-in Xarray fu
 da.ephys.align(...).sel(unit=1).mean('trial').ephys.smooth(...)
 ```
 
-## Installation
+### NWB example
 
-### For users
+Analysis usually starts from two `DataFrames` loaded from an NWB file, one for spikes and one for trials:
 
-```bash
-pip install aind-ephys-utils
+```python
+from aind_ephys_utils.adapters import from_dataframe
+from pynwb import NWBHDF5IO
+
+# read the file
+nwb = NWBHDF5IO('/path/to/file.nwb', 'r').read()
+
+# load units and trials dataframes
+units = nwb.units.to_dataframe()
+trials = nwb.trials.to_dataframe()
+
+# align all units to all trials in a specific time window
+spikes = from_dataframe(units, trials, window=(-0.5, 1.0))
+
+# plot a spike raster for one unit, grouped by the value in the "choice" column:
+ax = spikes.sel(unit=1).ephys.plot.raster(group_by="choice")
+
+# bin the spikes in 0.01 s intervals and smooth
+binned = spikes.ephys.bin(0.01).ephys.smooth(window=0.05)
+
+# plot a PSTH for all units and conditions:
+ax = binned.ephys.plot.psth()
 ```
 
-### For developers
+### Dimensionality reduction
+
+One of the most powerful features is the `reduce` operation, which makes it straightforward to perform dimensionality reduction on neural population data:
+
+```python
+ds = spikes.ephys.reduce(method='pca', n_components=10)
+
+ds['projections'].shape  # (n_components, n_trials, n_timesteps)
+
+```
+
+The `reduce` operation currently supports six commonly used dimensionality reduction methods:
+
+- `'pca'`: Principal component analysis
+- `'dpca'`: Demixed principal component analysis ([Kobak et al., 2016](http://dx.doi.org/10.7554/eLife.10989.001))
+- `'coding_direction'`: Coding direction
+- `'logistic'`: Logistic regression
+- `'lda'`: Linear discriminant analysis
+- `'rrr'`: Reduced rank regression
+
+### Other operations
+
+`DataArray` objects with dimensions of `spikes`, `trials`, and/or `time` are compatible with the following operations, available via the `ephys` accessor:
+
+- `align`: Align a `DataArray` of spike times to a `DataArray` of trial times
+- `bin`: Transform a `DataArray` of spike times into a `DataArray` of binned firing rates
+- `baseline`: Subtract the firing rate in a baseline interval
+- `normalize`: Perform z-scoring across trials or time
+- `psth`: Compute the mean across conditions
+- `restrict`: Only keep data within a specified time window
+- `smooth`: Smooth firing rates over time
+
+
+## Contributing
+
+### Developer installation
 
 First, clone the repository. Then, from the `aind-ephys-utils` directory, run:
 
@@ -47,9 +100,7 @@ First, clone the repository. Then, from the `aind-ephys-utils` directory, run:
 pip install -e .[dev]
 ```
 
-**Note:** On recent versions of macOS, you'll need to put the last argument in quotation marks: `".[dev]"`
-
-## Contributing
+**Note:** On macOS, you'll need to put the last argument in quotation marks: `".[dev]"`
 
 ### Linters and testing
 

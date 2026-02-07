@@ -8,9 +8,9 @@ Example
 
 .. code-block:: python
 
-   psth = da.ephys.psth(dim="trial", reduce="mean")
+   psth = da.ephys.psth(dim="trial")
    psth_by_condition = da.ephys.psth(
-       dim="trial", reduce="mean", group_by="condition"
+       dim="trial", group_by="condition"
    )
 
 Notes

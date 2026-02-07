@@ -13,12 +13,30 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
+.. image:: _static/aind-ephys-utils.png
+
 Installation
 ############
 
 .. code-block:: bash
 
    pip install aind-ephys-utils
+
+Key concepts
+############
+
+All analysis happens on Xarray ``DataArray`` objects with labeled dimensions and coordinates, via the ``ephys`` accessor:
+- ``da.ephys.align(...)``
+- ``da.ephys.reduce(...)``
+- ``da.ephys.psth(...)``
+- ``da.ephys.plot.raster(...)``
+
+This allows functions to be run in sequence and combined with built-in Xarray functions, e.g.:
+
+.. code-block:: python
+
+   da.ephys.align(...).sel(unit=1).mean('trial').ephys.smooth(...)
+
 
 Example usage (with NWB)
 ##########################
@@ -35,13 +53,16 @@ Example usage (with NWB)
    units = nwb.units.to_dataframe()
    trials = nwb.trials.to_dataframe()
 
-   # align all units to all trials in a window
+   # align all units to all trials in a specific time window
    spikes = from_dataframe(units, trials, window=(-0.5, 1.0))
 
-   # Use the `ephys` accessor to bin the spikes in 0.01 s intervals and smooth
-   binned = spikes.ephys.bin(0.01).ephys.smooth(sigma=0.05)
+   # plot a spike raster for one unit, grouped by the value in the "choice" column:
+   ax = spikes.sel(unit=1).ephys.plot.raster(group_by="choice")
 
-   # plot a PSTH
+   # bin the spikes in 0.01 s intervals and smooth
+   binned = spikes.ephys.bin(0.01).ephys.smooth(window=0.05)
+
+   # plot a PSTH for all units and conditions:
    ax = binned.ephys.plot.psth()
 
 Next steps
@@ -63,9 +84,6 @@ Documentation
    adapters/index
    ops/index
    plots/index
-   tutorials/index
-   getting_started/troubleshooting
-   getting_started/glossary
    api/modules
 
 * :ref:`genindex`
