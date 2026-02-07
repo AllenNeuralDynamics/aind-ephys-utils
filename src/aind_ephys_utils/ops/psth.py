@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional, Sequence, Union
+
 import numpy as np
 import xarray as xr
 
@@ -13,7 +15,8 @@ def psth(
     da: xr.DataArray,
     *,
     dim: str = C.trial,
-    reduce: str = "mean",
+    method: str = "mean",
+    group_by: Optional[Union[str, Sequence[str]]] = None,
     keep_trials: bool = False,
 ) -> xr.DataArray:
     """
@@ -25,20 +28,25 @@ def psth(
         Input DataArray (binned or continuous).
     dim:
         Dimension to reduce across.
-    reduce:
+    method:
         Reduction method (e.g. "mean", "median").
+    group_by:
+        Optional coord name(s) to group along ``dim`` before reducing.
     keep_trials:
         If True, keep per-trial data along with the summary.
     """
     if dim not in da.dims:
         return da.copy()
 
+    if method is not None:
+        reduce = method
     reduce = reduce.lower()
-    if not hasattr(da, reduce):
-        raise ValueError(f"Unknown reduce method {reduce!r}.")
+    if group_by is not None and keep_trials:
+        raise ValueError(
+            "keep_trials=True is not supported when group_by is set."
+        )
 
-    reducer = getattr(da, reduce)
-    summary = reducer(dim=dim, keep_attrs=True)
+    summary = _grouped_reduce(da, dim=dim, reduce=reduce, group_by=group_by)
 
     if not keep_trials:
         summary.attrs = dict(da.attrs)
@@ -53,3 +61,47 @@ def psth(
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
     return out
+
+
+def _grouped_reduce(
+    da: xr.DataArray,
+    *,
+    dim: str,
+    reduce: str,
+    group_by: Optional[Union[str, Sequence[str]]],
+) -> xr.DataArray:
+    """Apply optional groupby over ``dim`` and then reduce."""
+    if group_by is None:
+        if not hasattr(da, reduce):
+            raise ValueError(f"Unknown method {reduce!r}.")
+        return getattr(da, reduce)(dim=dim, keep_attrs=True)
+
+    if isinstance(group_by, str):
+        group_by = [group_by]
+    for g in group_by:
+        if g not in da.coords:
+            raise ValueError(f"group_by coord {g!r} not found in DataArray.")
+        if dim not in da[g].dims:
+            raise ValueError(
+                f"group_by coord {g!r} must be defined over {dim!r}."
+            )
+
+    if len(group_by) == 1:
+        grouped = da.groupby(group_by[0])
+        if not hasattr(grouped, reduce):
+            raise ValueError(f"Unknown method {reduce!r}.")
+        return getattr(grouped, reduce)(dim=dim, keep_attrs=True)
+
+    labels = list(zip(*(da[g].values for g in group_by)))
+    group_coord = xr.DataArray(labels, dims=(dim,), coords={dim: da[dim]})
+    da2 = da.assign_coords(_group=group_coord)
+    grouped = da2.groupby("_group")
+    if not hasattr(grouped, reduce):
+        raise ValueError(f"Unknown method {reduce!r}.")
+    out = getattr(grouped, reduce)(dim=dim, keep_attrs=True)
+    names = [
+        ",".join(f"{g}={v}" for g, v in zip(group_by, key))
+        for key in out.coords["_group"].values
+    ]
+    out = out.rename({"_group": "group"})
+    return out.assign_coords(group=np.asarray(names, dtype=object))

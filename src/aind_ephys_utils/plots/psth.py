@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..standards.conventions import C
 from ..ops.psth import psth as ops_psth
+from ..standards.conventions import C
 from .annotations import add_scale_bars, annotate_events
 
 

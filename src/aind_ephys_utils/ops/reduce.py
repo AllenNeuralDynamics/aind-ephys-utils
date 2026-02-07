@@ -25,8 +25,8 @@ def reduce(  # noqa: C901
     da: xr.DataArray,
     *,
     method: str,
-    dim: Optional[str] = None,
-    n_components: Optional[int] = None,
+    dim: Optional[str] = "unit",
+    n_components: Optional[int] = 5,
     stack: Optional[Tuple[str, ...]] = (C.trial, C.time),
     unstack: bool = True,
     return_dataset: bool = True,
@@ -82,6 +82,8 @@ def reduce(  # noqa: C901
         Time dimension name.
     trial_average:
         If True (default), average across trials before dPCA marginalization.
+        If `trial_dim` is absent, input is treated as already averaged and must
+        include label dims directly (e.g., ``choice``).
     labels:
         Coordinate name(s) used for dPCA and supervised methods
         (coding direction, logistic, lda). Must exist in `da.coords`.
@@ -257,10 +259,6 @@ def _reduce_dpca(  # noqa: C901
         condition_dims = tuple(labels)
     if len(condition_dims) == 0:
         raise ValueError("labels is required for method='dpca'.")
-    if trial_dim not in da.dims:
-        raise ValueError(
-            f"trial_dim {trial_dim!r} not found in DataArray dims."
-        )
     if time_dim not in da.dims:
         raise ValueError(f"time_dim {time_dim!r} not found in DataArray dims.")
     if dim is None:
@@ -270,9 +268,20 @@ def _reduce_dpca(  # noqa: C901
             raise ValueError("dim is required for method='dpca'.")
 
     if trial_average:
-        da_cond = _condition_mean(
-            da, trial_dim=trial_dim, condition_dims=condition_dims
-        )
+        if trial_dim in da.dims:
+            da_cond = _condition_mean(
+                da, trial_dim=trial_dim, condition_dims=condition_dims
+            )
+        else:
+            # Already condition-averaged input (e.g. from psth(group_by=...)).
+            missing = [d for d in condition_dims if d not in da.dims]
+            if missing:
+                raise ValueError(
+                    "trial_average=True without a trial dimension requires "
+                    "condition_dims to be dimensions; "
+                    f"missing dims: {missing}."
+                )
+            da_cond = da
     else:
         if trial_dim in da.dims:
             raise ValueError(

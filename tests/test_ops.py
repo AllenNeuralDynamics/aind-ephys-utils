@@ -81,8 +81,60 @@ class OpsTest(unittest.TestCase):
             dims=("trial", "time"),
             coords={"trial": [0, 1], "time": [0, 1]},
         )
-        out = psth(da, dim="trial", reduce="mean")
+        out = psth(da, dim="trial", method="mean")
         np.testing.assert_allclose(out.values, [2.0, 4.0])
+
+    def test_psth_group_by_mean(self) -> None:
+        """Group by trial coord before averaging."""
+        da = xr.DataArray(
+            [[1.0, 3.0], [3.0, 5.0], [10.0, 14.0], [14.0, 18.0]],
+            dims=("trial", "time"),
+            coords={
+                "trial": [0, 1, 2, 3],
+                "time": [0, 1],
+                "condition": ("trial", ["a", "a", "b", "b"]),
+            },
+        )
+        out = psth(da, dim="trial", method="mean", group_by="condition")
+        self.assertEqual(out.dims, ("condition", "time"))
+        np.testing.assert_array_equal(out["condition"].values, ["a", "b"])
+        np.testing.assert_allclose(out.sel(condition="a").values, [2.0, 4.0])
+        np.testing.assert_allclose(out.sel(condition="b").values, [12.0, 16.0])
+
+    def test_psth_group_by_median(self) -> None:
+        """Group by trial coord before median reduction."""
+        da = xr.DataArray(
+            [[1.0, 7.0], [3.0, 5.0], [10.0, 30.0], [14.0, 18.0]],
+            dims=("trial", "time"),
+            coords={
+                "trial": [0, 1, 2, 3],
+                "time": [0, 1],
+                "condition": ("trial", ["a", "a", "b", "b"]),
+            },
+        )
+        out = psth(da, dim="trial", method="median", group_by="condition")
+        np.testing.assert_allclose(out.sel(condition="a").values, [2.0, 6.0])
+        np.testing.assert_allclose(out.sel(condition="b").values, [12.0, 24.0])
+
+    def test_psth_group_by_disallows_keep_trials(self) -> None:
+        """group_by and keep_trials cannot be used together."""
+        da = xr.DataArray(
+            [[1.0, 3.0], [3.0, 5.0]],
+            dims=("trial", "time"),
+            coords={
+                "trial": [0, 1],
+                "time": [0, 1],
+                "condition": ("trial", ["a", "a"]),
+            },
+        )
+        with self.assertRaises(ValueError):
+            _ = psth(
+                da,
+                dim="trial",
+                method="mean",
+                group_by="condition",
+                keep_trials=True,
+            )
 
     def test_reduce_pca(self) -> None:
         """Run PCA reduction over trials."""
@@ -122,6 +174,150 @@ class OpsTest(unittest.TestCase):
         out = restrict(spikes, window=(0.1, 0.4))
         np.testing.assert_allclose(out.values[0, 0], [0.1, 0.3])
         np.testing.assert_allclose(out.values[0, 1], [0.2])
+
+
+class ReduceMethodsTest(unittest.TestCase):
+    """Coverage for all dimensionality-reduction methods."""
+
+    @staticmethod
+    def _make_reduce_data() -> xr.DataArray:
+        """Construct simple separable trial x unit x time data."""
+        n_trial, n_unit, n_time = 6, 3, 5
+        choice = np.array([0, 0, 0, 1, 1, 1], dtype=int)
+        base = np.zeros((n_trial, n_unit, n_time), dtype=float)
+        t = np.linspace(-0.2, 0.2, n_time)
+        base[:, 0, :] = choice[:, None] * 2.0 + t[None, :]
+        base[:, 1, :] = (1 - choice)[:, None] * 1.5 - t[None, :]
+        base[:, 2, :] = 0.25 * t[None, :] + 0.1
+        return xr.DataArray(
+            base,
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": np.arange(n_trial),
+                "unit": np.arange(n_unit),
+                "time": t,
+                "choice": ("trial", choice),
+            },
+        )
+
+    def test_reduce_pca(self) -> None:
+        """PCA returns projection and weights with expected dimensions."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="pca",
+            dim="unit",
+            n_components=2,
+            stack=("trial", "time"),
+        )
+        self.assertIn("projections", out)
+        self.assertIn("weights", out)
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 2)
+
+    def test_reduce_dpca(self) -> None:
+        """dPCA returns marginalized projections and per-marginal weights."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="dpca",
+            dim="unit",
+            n_components=2,
+            labels="choice",
+        )
+        self.assertIn("projections", out)
+        self.assertIn("weights", out)
+        self.assertIn("marginal", out["projections"].dims)
+        self.assertIn("component", out["projections"].dims)
+        self.assertIn("choice", out["projections"].dims)
+        self.assertIn("time", out["projections"].dims)
+        self.assertEqual(
+            out["weights"].dims, ("marginal", "component", "unit")
+        )
+
+    def test_reduce_coding_direction(self) -> None:
+        """Coding direction returns a single discriminant component."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="coding_direction",
+            dim="unit",
+            labels="choice",
+            stack=("trial", "time"),
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 1)
+
+    def test_reduce_logistic(self) -> None:
+        """Logistic reduction returns one component for binary labels."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="logistic",
+            dim="unit",
+            labels="choice",
+            stack=("trial", "time"),
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 1)
+
+    def test_reduce_lda(self) -> None:
+        """LDA reduction returns one component for binary labels."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="lda",
+            dim="unit",
+            labels="choice",
+            stack=("trial", "time"),
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 1)
+
+    def test_reduce_rrr(self) -> None:
+        """RRR returns requested number of components for multivariate targets."""
+        da = self._make_reduce_data()
+        target_data = np.stack(
+            [
+                da.values[:, 0, :] + da.values[:, 1, :],
+                da.values[:, 2, :] - da.values[:, 1, :],
+            ],
+            axis=-1,
+        )
+        targets = xr.DataArray(
+            target_data,
+            dims=("trial", "time", "target"),
+            coords={
+                "trial": da.coords["trial"],
+                "time": da.coords["time"],
+                "target": ["y0", "y1"],
+            },
+        )
+        out = reduce(
+            da,
+            method="rrr",
+            dim="unit",
+            stack=("trial", "time"),
+            targets=targets,
+            rank=2,
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 2)
 
 
 class NormalizeEventsTest(unittest.TestCase):

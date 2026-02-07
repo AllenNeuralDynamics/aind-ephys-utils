@@ -31,10 +31,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from ..standards.conventions import C
-from ..standards.validate import validate as validate_xarray
 from ..ops.align import align as ops_align
 from ..ops.bin import bin as ops_bin
+from ..standards.conventions import C
+from ..standards.validate import validate as validate_xarray
 
 
 class FromDataFrameError(ValueError):

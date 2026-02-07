@@ -152,7 +152,7 @@ def _align_unit(
 
     # Slice and shift for each trial (can't vectorize due to ragged output)
     for i in range(n_trials):
-        out[i] = arr[all_lo[i]: all_hi[i]] - t0_vals[i]
+        out[i] = arr[all_lo[i]: all_hi[i]] - t0_vals[i]  # fmt: skip
 
     return out
 

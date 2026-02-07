@@ -9,12 +9,10 @@ that interoperates with standard xarray operations (e.g., `.sel`, `.mean`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import xarray as xr
 
-from ..standards.conventions import C
-from ..standards.validate import validate
 from ..ops.align import align as _align
 from ..ops.baseline import baseline as _baseline
 from ..ops.bin import bin as _bin
@@ -26,6 +24,8 @@ from ..ops.smooth import smooth as _smooth
 from ..plots.psth import psth as _plot_psth
 from ..plots.raster import raster as _plot_raster
 from ..plots.trajectory import trajectory as _plot_trajectory
+from ..standards.conventions import C
+from ..standards.validate import validate
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ class EphysDataArrayAccessor:
             "  - da.ephys.smooth(method='gaussian', sigma=0.02)\n"
             "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
             "  - da.ephys.normalize(dim='trial', method='zscore')\n"
-            "  - da.ephys.psth(dim='trial', reduce='mean')\n"
+            "  - da.ephys.psth(dim='trial', method='mean')\n"
             "  - da.ephys.reduce(method='pca', dim='unit', n_components=10)\n"
             "  - da.ephys.restrict(window=(-0.5, 1.0))\n"
             "  - da.ephys.plot.raster(...), da.ephys.plot.psth(...)\n"
@@ -226,7 +226,8 @@ class EphysDataArrayAccessor:
         self,
         *,
         dim: str = C.trial,
-        reduce: str = "mean",
+        method: str = "mean",
+        group_by: Optional[Union[str, Sequence[str]]] = None,
         keep_trials: bool = False,
     ) -> xr.DataArray:
         """Reduce across trials to compute a PSTH-style summary.
@@ -236,7 +237,11 @@ class EphysDataArrayAccessor:
         If keep_trials=True, includes the trial-wise data alongside summary.
         """
         return _psth(
-            self._obj, dim=dim, reduce=reduce, keep_trials=keep_trials
+            self._obj,
+            dim=dim,
+            method=method,
+            group_by=group_by,
+            keep_trials=keep_trials,
         )
 
     def reduce(self, *args: Any, **kwargs: Any) -> xr.DataArray:
