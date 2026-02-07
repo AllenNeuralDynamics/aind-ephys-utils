@@ -9,6 +9,7 @@ from .baseline import baseline
 from .bin import bin
 from .normalize import normalize
 from .psth import psth
+from .pseudopop import pseudopop
 from .reduce import reduce
 from .restrict import restrict
 from .smooth import smooth
@@ -19,6 +20,7 @@ __all__ = [
     "bin",
     "normalize",
     "psth",
+    "pseudopop",
     "reduce",
     "restrict",
     "smooth",

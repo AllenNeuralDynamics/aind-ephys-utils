@@ -11,6 +11,7 @@ from aind_ephys_utils.ops import (
     bin,
     normalize,
     psth,
+    pseudopop,
     reduce,
     restrict,
     smooth,
@@ -135,6 +136,86 @@ class OpsTest(unittest.TestCase):
                 group_by="condition",
                 keep_trials=True,
             )
+
+    def test_pseudopop_grouped_concat(self) -> None:
+        """Concatenate grouped PSTHs across sessions on unit axis."""
+        da0 = xr.DataArray(
+            np.array(
+                [
+                    [[1.0, 3.0], [2.0, 4.0]],
+                    [[3.0, 5.0], [4.0, 6.0]],
+                ]
+            ),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0, 1],
+                "time": [0, 1],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        da1 = xr.DataArray(
+            np.array(
+                [
+                    [[10.0, 12.0]],
+                    [[14.0, 16.0]],
+                ]
+            ),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0],
+                "time": [0, 1],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        out = pseudopop(
+            [da0, da1], group_by="choice", session_ids=["s0", "s1"]
+        )
+        self.assertEqual(out.dims, ("choice", "unit", "time"))
+        self.assertEqual(out.sizes["unit"], 3)
+        np.testing.assert_array_equal(
+            out["session"].values, np.array(["s0", "s0", "s1"], dtype=object)
+        )
+        np.testing.assert_array_equal(out["unit"].values, np.array([0, 1, 2]))
+        np.testing.assert_allclose(
+            out.sel(choice="a").isel(unit=0).values, np.array([2.0, 4.0])
+        )
+        np.testing.assert_allclose(
+            out.sel(choice="a").isel(unit=2).values, np.array([12.0, 14.0])
+        )
+
+    def test_pseudopop_default_session_ids(self) -> None:
+        """Default session IDs should be s0, s1, ..."""
+        da = xr.DataArray(
+            np.array([[[1.0, 2.0]], [[3.0, 4.0]]]),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0],
+                "time": [0, 1],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        out = pseudopop([da], group_by="choice")
+        np.testing.assert_array_equal(
+            out["session"].values, np.array(["s0"], dtype=object)
+        )
+
+    def test_pseudopop_session_ids_length_mismatch(self) -> None:
+        """session_ids length must match number of sessions."""
+        da = xr.DataArray(
+            np.array([[[1.0, 2.0]], [[3.0, 4.0]]]),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0],
+                "time": [0, 1],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        with self.assertRaises(ValueError):
+            _ = pseudopop([da], group_by="choice", session_ids=["s0", "s1"])
 
     def test_reduce_pca(self) -> None:
         """Run PCA reduction over trials."""
