@@ -11,7 +11,7 @@ The adaptation here is intentionally minimal for aind-ephys-utils:
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import scipy.linalg as linalg
@@ -30,10 +30,13 @@ def gpfa(
     dim: str,
     trial_dim: str,
     time_dim: str,
+    gpfa_options: Optional[Dict[str, object]] = None,
 ) -> xr.Dataset:
     """Run GPFA on pre-binned ``DataArray`` and return projections/weights."""
     if trial_dim not in da.dims:
-        raise ValueError(f"trial_dim {trial_dim!r} not found in DataArray dims.")
+        raise ValueError(
+            f"trial_dim {trial_dim!r} not found in DataArray dims."
+        )
     if time_dim not in da.dims:
         raise ValueError(f"time_dim {time_dim!r} not found in DataArray dims.")
     if dim not in da.dims:
@@ -53,12 +56,16 @@ def gpfa(
     params_est, _fit_info = _fit_gpfa(
         seqs=seqs,
         x_dim=n_components,
+        gpfa_options=gpfa_options,
     )
     seqs_latent, _ll = _exact_inference_with_ll(seqs, params_est, get_ll=True)
     corth, seqs_latent = _orthonormalize(params_est, seqs_latent)
 
     proj = np.stack(
-        [seqs_latent[i]["latent_variable_orth"] for i in range(len(seqs_latent))],
+        [
+            seqs_latent[i]["latent_variable_orth"]
+            for i in range(len(seqs_latent))
+        ],
         axis=1,
     )
     projections = xr.DataArray(
@@ -101,7 +108,11 @@ def _prepare_binned_counts(
     # If inputs are not count-like, assume they are rates and convert by dt.
     frac = np.abs(y - np.round(y))
     is_count_like = float(np.nanmedian(frac)) < 1e-6
-    if (not is_count_like) and time_dim in da_use.coords and da_use.sizes.get(time_dim, 0) > 1:
+    if (
+        (not is_count_like)
+        and time_dim in da_use.coords
+        and da_use.sizes.get(time_dim, 0) > 1
+    ):
         t = np.asarray(da_use.coords[time_dim].values, dtype=float)
         dt = float(np.median(np.diff(t)))
         if np.isfinite(dt) and dt > 0:
@@ -128,13 +139,64 @@ def _as_seqs_from_y(y: np.ndarray) -> np.ndarray:
     return seqs
 
 
-def _fit_gpfa(
+def _fit_gpfa(  # noqa C901
     seqs: np.ndarray,
     *,
     x_dim: int,
+    gpfa_options: Optional[Dict[str, object]] = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
-    """Fit GPFA parameters with fixed defaults."""
-    seqs_train = _cut_trials(seqs, seg_length=20)
+    """Fit GPFA parameters with configurable options."""
+    opts = dict(gpfa_options or {})
+    allowed = {
+        "max_iters",
+        "freq_ll",
+        "em_tol",
+        "min_var_frac",
+        "tau_init",
+        "eps_init",
+        "seg_length",
+        "learn_kernel_params",
+        "learn_gp_noise",
+        "r_force_diagonal",
+        "fast_mode",
+        "gp_param_update_every",
+    }
+    unknown = set(opts).difference(allowed)
+    if unknown:
+        raise ValueError(f"Unknown gpfa_options keys: {sorted(unknown)}")
+
+    max_iters = int(opts.get("max_iters", 200))
+    freq_ll = int(opts.get("freq_ll", 5))
+    em_tol = float(opts.get("em_tol", 1.0e-8))
+    min_var_frac = float(opts.get("min_var_frac", 0.01))
+    tau_init = float(opts.get("tau_init", 5.0))
+    eps_init = float(opts.get("eps_init", 1.0e-3))
+    seg_length = opts.get("seg_length", 20)
+    learn_kernel_params = bool(opts.get("learn_kernel_params", True))
+    learn_gp_noise = bool(opts.get("learn_gp_noise", False))
+    r_force_diagonal = bool(opts.get("r_force_diagonal", True))
+    fast_mode = bool(opts.get("fast_mode", False))
+    gp_param_update_every = opts.get("gp_param_update_every", None)
+    if gp_param_update_every is None:
+        gp_param_update_every = 5 if fast_mode else 1
+    gp_param_update_every = int(gp_param_update_every)
+
+    if max_iters < 1:
+        raise ValueError("gpfa_options['max_iters'] must be >= 1.")
+    if freq_ll < 1:
+        raise ValueError("gpfa_options['freq_ll'] must be >= 1.")
+    if em_tol <= 0:
+        raise ValueError("gpfa_options['em_tol'] must be > 0.")
+    if min_var_frac < 0:
+        raise ValueError("gpfa_options['min_var_frac'] must be >= 0.")
+    if tau_init <= 0:
+        raise ValueError("gpfa_options['tau_init'] must be > 0.")
+    if eps_init < 0:
+        raise ValueError("gpfa_options['eps_init'] must be >= 0.")
+    if gp_param_update_every < 1:
+        raise ValueError("gpfa_options['gp_param_update_every'] must be >= 1.")
+
+    seqs_train = _cut_trials(seqs, seg_length=float(seg_length))
     if len(seqs_train) == 0:
         seqs_train = _cut_trials(seqs, seg_length=np.inf)
 
@@ -148,24 +210,25 @@ def _fit_gpfa(
 
     params_init: Dict[str, np.ndarray] = {}
     params_init["covType"] = "rbf"
-    params_init["gamma"] = (1.0 / 5.0) ** 2 * np.ones(x_dim)
-    params_init["eps"] = 1.0e-3 * np.ones(x_dim)
+    params_init["gamma"] = (1.0 / tau_init) ** 2 * np.ones(x_dim)
+    params_init["eps"] = eps_init * np.ones(x_dim)
     params_init["d"] = y_all.mean(axis=1)
     params_init["C"] = fa.components_.T
     params_init["R"] = np.diag(fa.noise_variance_)
     params_init["notes"] = {
-        "learnKernelParams": True,
-        "learnGPNoise": False,
-        "RforceDiagonal": True,
+        "learnKernelParams": learn_kernel_params,
+        "learnGPNoise": learn_gp_noise,
+        "RforceDiagonal": r_force_diagonal,
     }
 
     params_est, _seqs_latent, ll, iter_time = _em(
         params_init=params_init,
         seqs=seqs_train,
-        max_iters=500,
-        tol=1.0e-8,
-        min_var_frac=0.01,
-        freq_ll=5,
+        max_iters=max_iters,
+        tol=em_tol,
+        min_var_frac=min_var_frac,
+        freq_ll=freq_ll,
+        gp_param_update_every=gp_param_update_every,
     )
     fit_info = {"iteration_time": iter_time, "log_likelihoods": ll}
     return params_est, fit_info
@@ -179,9 +242,14 @@ def _em(
     tol: float,
     min_var_frac: float,
     freq_ll: int,
+    gp_param_update_every: int,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, List[float], List[float]]:
     """EM loop for GPFA parameter fitting."""
     params = params_init
+    if params["notes"].get("learnGPNoise", False):
+        raise ValueError(
+            "gpfa_options['learn_gp_noise']=True is not supported."
+        )
     t = seqs["T"]
     y_dim, x_dim = params["C"].shape
     lls: List[float] = []
@@ -235,7 +303,9 @@ def _em(
             r = d.dot(d.T) + (sum_yy - yd - yd.T - term) / t.sum()
             params["R"] = (r + r.T) / 2
 
-        if params["notes"]["learnKernelParams"]:
+        if params["notes"]["learnKernelParams"] and (
+            np.fmod(iter_id, gp_param_update_every) == 0
+        ):
             params["gamma"] = _learn_gp_params(seqs_latent, params)["gamma"]
 
         iter_time.append(time.time() - tic)
@@ -257,7 +327,9 @@ def _exact_inference_with_ll(
     y_dim, x_dim = params["C"].shape
 
     dtype_out = [(x, seqs[x].dtype) for x in seqs.dtype.names]
-    dtype_out.extend([("latent_variable", object), ("Vsm", object), ("VsmGP", object)])
+    dtype_out.extend(
+        [("latent_variable", object), ("Vsm", object), ("VsmGP", object)]
+    )
     seqs_latent = np.empty(len(seqs), dtype=dtype_out)
     for name in seqs.dtype.names:
         seqs_latent[name] = seqs[name]
@@ -279,7 +351,7 @@ def _exact_inference_with_ll(
         vsm = np.full((x_dim, x_dim, int(t)), np.nan)
         idx = np.arange(0, x_dim * int(t) + 1, x_dim)
         for i in range(int(t)):
-            vsm[:, :, i] = minv[idx[i] : idx[i + 1], idx[i] : idx[i + 1]]
+            vsm[:, :, i] = minv[idx[i]: idx[i + 1], idx[i]: idx[i + 1]]  # fmt: skip
         vsm_gp = np.full((int(t), int(t), x_dim), np.nan)
         for i in range(x_dim):
             vsm_gp[:, :, i] = minv[i::x_dim, i::x_dim]
@@ -292,9 +364,9 @@ def _exact_inference_with_ll(
         blk_prod = np.zeros((x_dim * t_half, x_dim * int(t)))
         idxh = range(0, x_dim * t_half + 1, x_dim)
         for i in range(t_half):
-            blk_prod[idxh[i] : idxh[i + 1], :] = c_rinv_c.dot(
-                minv[idxh[i] : idxh[i + 1], :]
-            )
+            blk_prod[idxh[i]: idxh[i + 1], :] = c_rinv_c.dot(
+                minv[idxh[i]: idxh[i + 1], :]
+            )  # fmt: skip
         eye_top = np.eye(x_dim * t_half, x_dim * int(t))
         blk_prod = k_big[: x_dim * t_half, :].dot(
             _fill_persymm(eye_top - blk_prod, x_dim, int(t))
@@ -329,19 +401,21 @@ def _learn_gp_params(
     seqs_latent: np.ndarray, params: Dict[str, np.ndarray]
 ) -> Dict[str, np.ndarray]:
     """Update GP kernel parameters."""
-    param_opt = {"gamma": np.empty_like(params["gamma"])}
-    precomp = _make_precomp(seqs_latent, params["C"].shape[1])
-    for i in range(params["C"].shape[1]):
-        const = {"eps": params["eps"][i]}
-        initp = np.log(params["gamma"][i])
-        res = optimize.minimize(
-            _grad_betgam,
-            initp,
-            args=(precomp[i], const),
-            method="L-BFGS-B",
-            jac=True,
+    x_dim = params["C"].shape[1]
+    gamma_opt = np.empty_like(params["gamma"])
+    precomp = _make_precomp(seqs_latent, x_dim)
+    eps = np.asarray(params["eps"], dtype=float)
+    gamma = np.asarray(params["gamma"], dtype=float)
+    for i in range(x_dim):
+        initp = np.log(gamma[i])
+        res = optimize.fmin_l_bfgs_b(
+            func=_grad_betgam,
+            x0=np.array([initp], dtype=float),
+            args=(precomp[i], float(eps[i])),
+            approx_grad=False,
         )
-        param_opt["gamma"][i] = np.exp(res.x.item())
+        gamma_opt[i] = np.exp(res[0].item())
+    param_opt = {"gamma": gamma_opt}
     return param_opt
 
 
@@ -375,16 +449,18 @@ def _segment_by_trial(seqs: np.ndarray, x: np.ndarray, fn: str) -> np.ndarray:
         seqs_new[name] = seqs[name]
     ctr = 0
     for n, t in enumerate(seqs["T"]):
-        seqs_new[n][fn] = x[:, ctr : ctr + t]
+        seqs_new[n][fn] = x[:, ctr: ctr + t]  # fmt: skip
         ctr += t
     return seqs_new
 
 
 def _rdiv(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Solve right matrix division ``x @ b = a`` (MATLAB ``a / b``)."""
     return np.linalg.solve(b.T, a.T).T
 
 
 def _logdet(a: np.ndarray) -> float:
+    """Compute ``log(det(a))`` for positive-definite matrices via Cholesky."""
     u = np.linalg.cholesky(a)
     return float(2 * np.log(np.diag(u)).sum())
 
@@ -443,44 +519,90 @@ def _fill_persymm(
     p_out[: blk_size_vert * t_half_up, :] = p_in
     for i in range(t_half):
         for j in range(n_blocks):
-            p_out[nv - (i + 1) * blk_size_vert : nv - i * blk_size_vert,
-                  nh - (j + 1) * blk_size : nh - j * blk_size] = p_in[
-                i * blk_size_vert : (i + 1) * blk_size_vert,
-                j * blk_size : (j + 1) * blk_size,
+            p_out[
+                nv - (i + 1) * blk_size_vert: nv - i * blk_size_vert,  # fmt: skip
+                nh - (j + 1) * blk_size: nh - j * blk_size,  # fmt: skip
+            ] = p_in[
+                i * blk_size_vert: (i + 1) * blk_size_vert,  # fmt: skip
+                j * blk_size: (j + 1) * blk_size,  # fmt: skip
             ]
     return p_out
 
 
 def _make_precomp(seqs: np.ndarray, x_dim: int) -> np.ndarray:
+    """Precompute trial-length-grouped sufficient stats for GP timescale updates.
+
+    Parameters
+    ----------
+    seqs : np.ndarray
+        Elephant-style sequence records containing ``T``, ``latent_variable``,
+        and ``VsmGP`` from the E-step posteriors.
+    x_dim : int
+        Number of latent dimensions.
+
+    Returns
+    -------
+    np.ndarray
+        Structured array (length ``x_dim``) with reusable terms for the
+        M-step GP kernel parameter objective/gradient, grouped by unique trial
+        length to avoid recomputing per-trial matrix products.
+    """
     tall = seqs["T"]
     tmax = tall.max()
     tdif = np.subtract.outer(np.arange(tmax), np.arange(tmax))
+    abs_dif = np.abs(tdif)
+    dif_sq = tdif**2
+    tu = np.unique(tall)
+
     precomp = np.empty(
         x_dim,
-        dtype=[("absDif", object), ("difSq", object), ("Tall", object), ("Tu", object)],
+        dtype=[
+            ("absDif", object),
+            ("difSq", object),
+            ("Tall", object),
+            ("Tu", object),
+        ],
     )
+
     for i in range(x_dim):
-        precomp[i]["absDif"] = np.abs(tdif)
-        precomp[i]["difSq"] = tdif**2
+        precomp[i]["absDif"] = abs_dif
+        precomp[i]["difSq"] = dif_sq
         precomp[i]["Tall"] = tall
-    tu = np.unique(tall)
-    for i in range(x_dim):
-        precomp_tu = np.empty(
+        precomp[i]["Tu"] = np.empty(
             len(tu),
-            dtype=[("nList", object), ("T", int), ("numTrials", int), ("PautoSUM", object)],
+            dtype=[
+                ("nList", object),
+                ("T", int),
+                ("numTrials", int),
+                ("PautoSUM", object),
+            ],
         )
-        for j, t in enumerate(tu):
-            precomp_tu[j]["nList"] = np.where(tall == t)[0]
-            precomp_tu[j]["T"] = t
-            precomp_tu[j]["numTrials"] = len(precomp_tu[j]["nList"])
-            precomp_tu[j]["PautoSUM"] = np.zeros((t, t))
-        precomp[i]["Tu"] = precomp_tu
+
+    grouped: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for j, t in enumerate(tu):
+        n_list = np.where(tall == t)[0]
+        latent_block = np.stack(
+            [np.asarray(seqs[n]["latent_variable"]) for n in n_list], axis=0
+        )  # nTrial x xDim x T
+        vsmgp_block = np.stack(
+            [np.asarray(seqs[n]["VsmGP"]) for n in n_list], axis=0
+        )  # nTrial x T x T x xDim
+        grouped[int(t)] = (n_list, latent_block, vsmgp_block)
+
+        for i in range(x_dim):
+            precomp[i]["Tu"][j]["nList"] = n_list
+            precomp[i]["Tu"][j]["T"] = t
+            precomp[i]["Tu"][j]["numTrials"] = len(n_list)
+
     for i in range(x_dim):
-        for j in range(len(tu)):
-            for n in precomp[i]["Tu"][j]["nList"]:
-                precomp[i]["Tu"][j]["PautoSUM"] += seqs[n]["VsmGP"][:, :, i]
-                x = seqs[n]["latent_variable"][i, :]
-                precomp[i]["Tu"][j]["PautoSUM"] += np.outer(x, x)
+        for j, t in enumerate(tu):
+            n_list, latent_block, vsmgp_block = grouped[int(t)]
+            latent_i = latent_block[:, i, :]  # nTrial x T
+            pauto = vsmgp_block[:, :, :, i].sum(axis=0) + latent_i.T.dot(
+                latent_i
+            )
+            precomp[i]["Tu"][j]["PautoSUM"] = pauto
+
     return precomp
 
 
@@ -515,7 +637,7 @@ def _cut_trials(seq_in: np.ndarray, seg_length: float = 20) -> np.ndarray:
         seg["T"] = seg_len
         for s in range(num_seg):
             t_start = seg_len * s - cum_ol[s]
-            seg[s]["y"] = seq_n["y"][:, t_start : t_start + seg_len]
+            seg[s]["y"] = seq_n["y"][:, t_start: t_start + seg_len]  # fmt: skip
         seq_out_buff.append(seg)
 
     if len(seq_out_buff) > 0:
@@ -524,12 +646,30 @@ def _cut_trials(seq_in: np.ndarray, seg_length: float = 20) -> np.ndarray:
 
 
 def _grad_betgam(
-    p: float, pre_comp: np.ndarray, const: Dict[str, float]
-) -> Tuple[float, float]:
+    p: Union[np.ndarray, float], pre_comp: np.ndarray, eps: float
+) -> Tuple[float, np.ndarray]:
+    """Evaluate negative log-likelihood and gradient for one GP timescale.
+
+    Parameters
+    ----------
+    p : np.ndarray | float
+        Log-timescale parameter (``log(gamma)`` in Elephant notation).
+    pre_comp : np.ndarray
+        One latent dimension entry returned by :func:`_make_precomp`.
+    eps : float
+        GP observation noise floor term used in the RBF kernel.
+
+    Returns
+    -------
+    tuple[float, np.ndarray]
+        Objective value and 1-element gradient array, formatted for
+        ``scipy.optimize.fmin_l_bfgs_b``.
+    """
+    p_val = float(np.asarray(p).item())
     tall = pre_comp["Tall"]
     tmax = tall.max()
-    temp = (1 - const["eps"]) * np.exp(-np.exp(p) / 2 * pre_comp["difSq"])
-    kmax = temp + const["eps"] * np.eye(tmax)
+    temp = (1 - eps) * np.exp(-np.exp(p_val) / 2 * pre_comp["difSq"])
+    kmax = temp + eps * np.eye(tmax)
     dkdg = -0.5 * temp * pre_comp["difSq"]
 
     dedg = 0.0
@@ -548,12 +688,14 @@ def _grad_betgam(
         n_trials = pre_comp["Tu"][j]["numTrials"]
         pauto = pre_comp["Tu"][j]["PautoSUM"]
         dot1 = pauto.ravel("F")[:mkr].dot(kinv_m_kinv.ravel("F")[:mkr])
-        dot2 = pauto.ravel("F")[-1 : mkr - 1 : -1].dot(
+        dot2 = pauto.ravel("F")[-1: mkr - 1: -1].dot(
             kinv_m_kinv.ravel("F")[: (t**2 - mkr)]
-        )
+        )  # fmt: skip
         dedg = dedg - 0.5 * n_trials * tr_kinv + 0.5 * dot1 + 0.5 * dot2
         f = f - 0.5 * n_trials * logdet_k - 0.5 * (pauto * kinv).sum()
 
     f = -f
-    df = -dedg * np.exp(p)
-    return float(np.asarray(f).item()), float(np.asarray(df).item())
+    df = -dedg * np.exp(p_val)
+    return float(np.asarray(f).item()), np.array(
+        [float(np.asarray(df).item())]
+    )

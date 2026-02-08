@@ -337,6 +337,64 @@ class ReduceMethodsTest(unittest.TestCase):
         self.assertEqual(out["weights"].dims, ("component", "unit"))
         self.assertEqual(out["projections"].sizes["component"], 2)
 
+    def test_reduce_gpfa_options(self) -> None:
+        """GPFA options should be configurable via gpfa_options dict."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        out = reduce(
+            da,
+            method="gpfa",
+            dim="unit",
+            n_components=2,
+            gpfa_options={"max_iters": 50, "freq_ll": 2},
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+
+    def test_reduce_gpfa_options_unknown_key(self) -> None:
+        """Unknown GPFA options should raise a clear error."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        with self.assertRaises(ValueError):
+            _ = reduce(
+                da,
+                method="gpfa",
+                dim="unit",
+                n_components=2,
+                gpfa_options={"not_a_real_option": 1},
+            )
+
+    def test_reduce_gpfa_fast_mode(self) -> None:
+        """Fast mode should run with a larger GP update interval."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        out = reduce(
+            da,
+            method="gpfa",
+            dim="unit",
+            n_components=2,
+            gpfa_options={"fast_mode": True, "gp_param_update_every": 3},
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+
+    def test_reduce_gpfa_options_invalid_update_interval(self) -> None:
+        """GP parameter update interval must be >= 1."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        with self.assertRaises(ValueError):
+            _ = reduce(
+                da,
+                method="gpfa",
+                dim="unit",
+                n_components=2,
+                gpfa_options={"gp_param_update_every": 0},
+            )
+
     def test_reduce_coding_direction(self) -> None:
         """Coding direction returns a single discriminant component."""
         da = self._make_reduce_data()

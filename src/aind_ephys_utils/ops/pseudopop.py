@@ -40,12 +40,12 @@ def pseudopop(
     psths: list[xr.DataArray] = []
     for i, da in enumerate(das):
         if unit_dim not in da.dims:
-            raise ValueError(f"unit_dim {unit_dim!r} not found in session {i}.")
+            raise ValueError(
+                f"unit_dim {unit_dim!r} not found in session {i}."
+            )
         sid = session_ids[i] if session_ids is not None else f"s{i}"
         p = psth(da, dim=C.trial, method="mean", group_by=group_by)
-        p = p.assign_coords(
-            {"session": (unit_dim, [sid] * p.sizes[unit_dim])}
-        )
+        p = p.assign_coords({"session": (unit_dim, [sid] * p.sizes[unit_dim])})
         psths.append(p)
 
     out = xr.concat(psths, dim=unit_dim, coords="minimal", compat="override")

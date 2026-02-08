@@ -45,6 +45,7 @@ def reduce(  # noqa: C901
     rank: Optional[int] = None,
     regularization: Optional[float] = None,
     cv: Optional[int] = None,
+    gpfa_options: Optional[Dict[str, object]] = None,
 ) -> Union[xr.DataArray, xr.Dataset]:
     """
     Reduce data dimensionality in an xarray-friendly way.
@@ -96,6 +97,10 @@ def reduce(  # noqa: C901
         Regularization strength for supervised methods.
     cv:
         Cross-validation folds for supervised methods.
+    gpfa_options:
+        Optional dictionary of GPFA configuration overrides, e.g.
+        ``{"max_iters": 200, "freq_ll": 5, "fast_mode": True,
+        "gp_param_update_every": 5}``.
     """
     method = method.lower()
     if method not in (
@@ -143,6 +148,7 @@ def reduce(  # noqa: C901
             dim=dim,
             trial_dim=trial_dim,
             time_dim=time_dim,
+            gpfa_options=gpfa_options,
         )
         if return_dataset:
             return ds
