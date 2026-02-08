@@ -2,7 +2,7 @@ Conventions
 ===========
 
 This package relies on stable naming conventions for dimensions, coordinates,
-and attributes. Following these conventions keeps analysis code composable.
+and attributes. If you use the ``from_dataframe`` method to build your analysis object, it will be formatted correctly by default. If you create an ``xarray.DataArray`` object yourself, it should contain the following information:
 
 Dimensions
 ----------

@@ -68,9 +68,10 @@ ds['projections'].shape  # (n_components, n_trials, n_timesteps)
 
 ```
 
-The `reduce` operation currently supports six commonly used dimensionality reduction methods:
+The `reduce` operation currently supports seven commonly used dimensionality reduction methods:
 
 - `'pca'`: Principal component analysis
+- `'gpfa'`: Gaussian process factor analysis
 - `'dpca'`: Demixed principal component analysis ([Kobak et al., 2016](http://dx.doi.org/10.7554/eLife.10989.001))
 - `'coding_direction'`: Coding direction
 - `'logistic'`: Logistic regression
@@ -206,6 +207,5 @@ After doing this, you can open a pull request on GitHub.
 Note that `git` will only track files inside the `aind-ephys-utils` directory, and will ignore everything else in the capsule. You will no longer be able to commit changes to the capsule itself, which is why this workflow should only be used for developing a library, and not for performing any type of data analysis.
 
 When you're done working, it's recommended to put the workstation on hold rather than shutting it down, in order to keep Visual Studio Code in the same state.
-
 
 

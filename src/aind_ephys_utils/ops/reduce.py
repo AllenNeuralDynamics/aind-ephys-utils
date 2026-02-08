@@ -16,6 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 
+from .gpfa import gpfa as _gpfa
 from ..standards.conventions import C
 from .dpca import dPCA
 from .utils import preserve_coords
@@ -53,7 +54,7 @@ def reduce(  # noqa: C901
     da:
         Input DataArray.
     method:
-        Reduction method (e.g. "pca", "dpca",
+        Reduction method (e.g. "pca", "gpfa", "dpca",
         "coding_direction", "logistic", "lda", "rrr").
     dim:
         Dimension to reduce across for methods that operate on a single axis.
@@ -99,6 +100,7 @@ def reduce(  # noqa: C901
     method = method.lower()
     if method not in (
         "pca",
+        "gpfa",
         "dpca",
         "coding_direction",
         "logistic",
@@ -126,6 +128,25 @@ def reduce(  # noqa: C901
             labels=labels,
             trial_average=trial_average,
         )
+
+    if method == "gpfa":
+        if n_components is None:
+            raise ValueError("n_components is required for method='gpfa'.")
+        if dim is None:
+            if C.unit in da.dims:
+                dim = C.unit
+            else:
+                raise ValueError("dim is required for method='gpfa'.")
+        ds = _gpfa(
+            da,
+            n_components=n_components,
+            dim=dim,
+            trial_dim=trial_dim,
+            time_dim=time_dim,
+        )
+        if return_dataset:
+            return ds
+        return ds["projections"]
 
     if method in ("coding_direction", "logistic", "lda", "rrr"):
         return _reduce_supervised(

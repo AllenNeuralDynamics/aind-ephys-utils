@@ -319,6 +319,24 @@ class ReduceMethodsTest(unittest.TestCase):
             out["weights"].dims, ("marginal", "component", "unit")
         )
 
+    def test_reduce_gpfa(self) -> None:
+        """GPFA returns projections and weights with expected dimensions."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        out = reduce(
+            da,
+            method="gpfa",
+            dim="unit",
+            n_components=2,
+        )
+        self.assertIn("projections", out)
+        self.assertIn("weights", out)
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+        self.assertEqual(out["projections"].sizes["component"], 2)
+
     def test_reduce_coding_direction(self) -> None:
         """Coding direction returns a single discriminant component."""
         da = self._make_reduce_data()

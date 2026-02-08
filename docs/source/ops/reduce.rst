@@ -14,6 +14,18 @@ PCA works on any ``DataArray`` with dimensions of ``(trials, units, time)``. If 
    proj = ds["projections"]
    w = ds["weights"]
 
+Example: GPFA
+---------------------
+
+GPFA works on pre-binned data with dimensions ``(trials, units, time)`` and
+uses the same default component behavior as PCA.
+
+.. code-block:: python
+
+   ds = da.ephys.reduce(method="gpfa")
+   proj = ds["projections"]
+   w = ds["weights"]
+
 Example: Supervised methods
 ----------------------------
 
@@ -39,5 +51,3 @@ Available supervised methods are:
 * ``'lda'``: Linear discriminant analysis
 
 * ``'rrr'``: Reduced rank regression
-
-

@@ -11,6 +11,7 @@ Submodules
    aind_ephys_utils.ops.baseline
    aind_ephys_utils.ops.bin
    aind_ephys_utils.ops.dpca
+   aind_ephys_utils.ops.gpfa
    aind_ephys_utils.ops.normalize
    aind_ephys_utils.ops.pseudopop
    aind_ephys_utils.ops.psth

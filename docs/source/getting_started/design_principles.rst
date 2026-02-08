@@ -22,7 +22,7 @@ Package layers
 Data model assumptions
 ----------------------
 
-- Ragged spikes are stored as object arrays with dims ``(trial, unit)``.
+- Ragged spikes are stored as object arrays with dims ``(trial, unit)`` or simply ``(unit,)``.
 - Binned spikes are numeric with dims ``(trial, unit, time)``.
 
 Coords and attributes are first‑class
