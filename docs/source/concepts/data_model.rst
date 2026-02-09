@@ -35,6 +35,13 @@ This package can also operate on other types of ``DataArray`` objects:
 
 **Trials**: Each value represents the time of an event within a trial. This array dimensions of ``(trial, event, bound)``. Use the ``align()`` operation to combine this with a ragged spikes object.
 
+.. image:: /_static/condition_unit_time_array.png
+   :alt: DataArray with condition, unit, and time coords.
+   :align: center
+   :width: 50%
+
+**Pseudopopulation**: When combining data across sessions, the ``trial`` dimension will not be the same for all units. Instead, we need an array with dimensions of ``(condition, unit, time)``, where each entry is the value of the condition-specific PSTH for a particular unit at a particular timepoint. Use the ``pseudopop()`` operation to generate this representation from ``(trial, unit, time)`` ``DataArrays`` from multiple sessions.
+
 Return values
 -------------
 
