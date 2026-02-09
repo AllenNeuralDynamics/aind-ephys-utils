@@ -18,7 +18,7 @@ def psth(  # noqa: C901
     *,
     group_by: Optional[Union[str, Sequence[str]]] = None,
     dim: str = C.trial,
-    reduce: str = "mean",
+    method: str = "mean",
     compute: bool = True,
     ax: Optional[plt.Axes] = None,
     events: Optional[Union[Sequence[float], np.ndarray, xr.DataArray]] = None,
@@ -53,7 +53,7 @@ def psth(  # noqa: C901
         Optional trial coord(s) to split and plot conditions.
     dim:
         Trial dimension to reduce across when compute=True.
-    reduce:
+    method:
         Reduction method passed to ops.psth.
     compute:
         If True, compute the PSTH from data using ops.psth.
@@ -105,7 +105,7 @@ def psth(  # noqa: C901
                     "plot.psth expects numeric data when compute=True; "
                     "bin ragged spikes first (e.g. da.ephys.bin(...))."
                 )
-            da_plot = ops_psth(da_g, dim=dim, reduce=reduce)
+            da_plot = ops_psth(da_g, dim=dim, method=method)
         else:
             da_plot = da_g
         psth_list.append(da_plot)

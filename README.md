@@ -71,7 +71,7 @@ ds['projections'].shape  # (n_components, n_trials, n_timesteps)
 The `reduce` operation currently supports seven commonly used dimensionality reduction methods:
 
 - `'pca'`: Principal component analysis
-- `'gpfa'`: Gaussian process factor analysis
+- `'gpfa'`: Gaussian process factor analysis ([Yu et al., 2009](https://doi.org/10.1152/jn.90941.2008))
 - `'dpca'`: Demixed principal component analysis ([Kobak et al., 2016](http://dx.doi.org/10.7554/eLife.10989.001))
 - `'coding_direction'`: Coding direction
 - `'logistic'`: Logistic regression

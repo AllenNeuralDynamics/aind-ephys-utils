@@ -55,6 +55,20 @@ class OpsTest(unittest.TestCase):
         total = float(out.sum())
         self.assertTrue(0.9 < total < 1.2)
 
+    def test_smooth_boxcar_causal_edge_normalization(self) -> None:
+        """Causal boxcar should not attenuate the leading sample."""
+        da = xr.DataArray(
+            [1.0, 2.0, 3.0, 4.0],
+            dims=("time",),
+            coords={"time": np.arange(4) * 0.1},
+        )
+        out = smooth(da, method="boxcar", window=0.3)
+        # With dt=0.1 and window=0.3, kernel length is 3. Leading samples
+        # should be means of available history: [1, (1+2)/2, (1+2+3)/3, ...]
+        np.testing.assert_allclose(
+            out.values[:3], np.array([1.0, 1.5, 2.0]), atol=1e-7
+        )
+
     def test_baseline_subtract(self) -> None:
         """Subtract baseline mean from a time window."""
         da = xr.DataArray(

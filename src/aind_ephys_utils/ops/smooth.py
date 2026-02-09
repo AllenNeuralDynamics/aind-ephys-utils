@@ -42,6 +42,11 @@ def smooth(
         raise ValueError(f"dim {dim!r} not found in DataArray dims.")
     if dim not in da.coords:
         raise ValueError(f"dim {dim!r} has no coordinate values.")
+    
+    if sigma is not None:
+        method = "gaussian"
+    elif method.lower() == "gaussian" and sigma is None:
+        raise ValueError("Gaussian smoothing requires sigma parameter.")
 
     dt = _infer_dt(da[dim].values)
     kernel = _make_kernel(
@@ -127,7 +132,14 @@ def _convolve_1d(
         return y
     if causal:
         out = np.convolve(y, kernel, mode="full")
-        return out[: y.shape[0]]
+        # Normalize by the effective kernel mass at each sample so the leading
+        # edge uses an average over available history instead of zero-padding.
+        norm = np.convolve(
+            np.ones(y.shape[0], dtype=float), kernel, mode="full"
+        )
+        out = out[: y.shape[0]]
+        norm = norm[: y.shape[0]]
+        return out / np.maximum(norm, np.finfo(float).eps)
     boundary = boundary.lower()
     pad = kernel.size // 2
     if pad == 0:
