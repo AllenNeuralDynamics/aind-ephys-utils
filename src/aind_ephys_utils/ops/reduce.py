@@ -16,9 +16,9 @@ from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 
-from .gpfa import gpfa as _gpfa
 from ..standards.conventions import C
 from .dpca import dPCA
+from .gpfa import gpfa as _gpfa
 from .utils import preserve_coords
 
 

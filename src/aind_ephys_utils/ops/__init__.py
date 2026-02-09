@@ -9,8 +9,8 @@ from .baseline import baseline
 from .bin import bin
 from .gpfa import gpfa
 from .normalize import normalize
-from .psth import psth
 from .pseudopop import pseudopop
+from .psth import psth
 from .reduce import reduce
 from .restrict import restrict
 from .smooth import smooth

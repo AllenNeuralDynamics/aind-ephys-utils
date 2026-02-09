@@ -15,7 +15,7 @@ The library can be installed via ``pip``. It only has three dependencies: ``xarr
 Load and convert
 ----------------
 
-To start working with spike data, it needs to be stored in a ``DataArray`` with the correct format. If you already have your spikes in Panda ``DataFrames`` with a ``spike_times`` columns (e.g., loaded from an NWB file), generating the appropriate data structure is straightforward:
+To start working with spike data, it needs to be stored in a ``DataArray`` with the correct format. If you already have your spikes in a Pandas or Polars ``DataFrame`` with a ``spike_times`` column (e.g., loaded from an NWB file), generating the appropriate data structure is straightforward:
 
 .. code-block:: python
 
@@ -55,7 +55,7 @@ Once your data is in the right format, you can use ``xarray`` operations to filt
 Bin, smooth, plot
 ------------------
 
-Now you can perform operations (e.g. binning and smoothing) on the output and plot the results. All ``aind-ephys-utils`` methods are available via the ``ephys`` accessor, whereas built-in Xarray methods can be called directly on the ``DataArray`` object.
+Now you can perform operations (e.g. binning and smoothing) on the output and plot the results. All ``aind-ephys-utils`` methods are available via the ``ephys`` accessor, whereas built-in Xarray methods can be called directly on the ``DataArray`` object:
 
 .. code-block:: python
 

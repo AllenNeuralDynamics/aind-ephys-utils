@@ -42,7 +42,7 @@ def smooth(
         raise ValueError(f"dim {dim!r} not found in DataArray dims.")
     if dim not in da.coords:
         raise ValueError(f"dim {dim!r} has no coordinate values.")
-    
+
     if sigma is not None:
         method = "gaussian"
     elif method.lower() == "gaussian" and sigma is None:
