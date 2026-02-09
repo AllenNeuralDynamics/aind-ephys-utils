@@ -15,5 +15,5 @@ effects. They preserve compatible coordinates and return ``DataArrays`` or
    normalize
    psth
    pseudopop
-   reduce
+   reduce/index
    restrict
