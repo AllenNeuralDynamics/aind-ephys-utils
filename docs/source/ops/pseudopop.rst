@@ -23,7 +23,7 @@ Example
 
 .. code-block:: python
 
-   from aind_ephys_utils.ops.pseudopop import pseudopop
+   from aind_ephys_utils import pseudopop
 
    pp = pseudopop(
        [session_a, session_b, session_c],

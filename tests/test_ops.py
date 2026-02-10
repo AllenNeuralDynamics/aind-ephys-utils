@@ -1,6 +1,7 @@
 """Tests for ops module implementations."""
 
 import unittest
+import warnings
 
 import numpy as np
 import xarray as xr
@@ -131,6 +132,25 @@ class OpsTest(unittest.TestCase):
         np.testing.assert_allclose(out.sel(condition="a").values, [2.0, 6.0])
         np.testing.assert_allclose(out.sel(condition="b").values, [12.0, 24.0])
 
+    def test_psth_group_by_multiple_coords(self) -> None:
+        """Group by multiple trial coords and return separate group dims."""
+        da = xr.DataArray(
+            [[1.0, 2.0], [3.0, 4.0], [10.0, 20.0], [30.0, 40.0]],
+            dims=("trial", "time"),
+            coords={
+                "trial": [0, 1, 2, 3],
+                "time": [0, 1],
+                "f1": ("trial", ["a", "a", "b", "b"]),
+                "f2": ("trial", ["x", "y", "x", "y"]),
+            },
+        )
+        out = psth(da, dim="trial", method="mean", group_by=["f1", "f2"])
+        self.assertEqual(set(out.dims), {"f1", "f2", "time"})
+        np.testing.assert_allclose(out.sel(f1="a", f2="x").values, [1.0, 2.0])
+        np.testing.assert_allclose(
+            out.sel(f1="b", f2="y").values, [30.0, 40.0]
+        )
+
     def test_psth_group_by_disallows_keep_trials(self) -> None:
         """group_by and keep_trials cannot be used together."""
         da = xr.DataArray(
@@ -230,6 +250,65 @@ class OpsTest(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             _ = pseudopop([da], group_by="choice", session_ids=["s0", "s1"])
+
+    def test_pseudopop_concat_join_explicit(self) -> None:
+        """Concatenation should set join explicitly to avoid FutureWarning."""
+        da0 = xr.DataArray(
+            np.array([[[1.0, 2.0]], [[3.0, 4.0]]]),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0],
+                "time": [0.0, 0.1],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        da1 = xr.DataArray(
+            np.array([[[10.0, 20.0]], [[30.0, 40.0]]]),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1],
+                "unit": [0],
+                "time": [0.0, 0.2],
+                "choice": ("trial", ["a", "a"]),
+            },
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = pseudopop([da0, da1], group_by="choice")
+        future_warnings = [
+            w for w in caught if issubclass(w.category, FutureWarning)
+        ]
+        self.assertEqual(len(future_warnings), 0)
+        np.testing.assert_array_equal(
+            out["time"].values, np.array([0.0, 0.1, 0.2])
+        )
+
+    def test_pseudopop_group_by_multiple_coords(self) -> None:
+        """Pseudopop should support multi-label trial grouping."""
+        da0 = xr.DataArray(
+            np.array(
+                [
+                    [[1.0, 2.0]],
+                    [[3.0, 4.0]],
+                    [[10.0, 20.0]],
+                    [[30.0, 40.0]],
+                ]
+            ),
+            dims=("trial", "unit", "time"),
+            coords={
+                "trial": [0, 1, 2, 3],
+                "unit": [0],
+                "time": [0.0, 0.1],
+                "f1": ("trial", ["a", "a", "b", "b"]),
+                "f2": ("trial", ["x", "y", "x", "y"]),
+            },
+        )
+        out = pseudopop([da0], group_by=["f1", "f2"])
+        self.assertEqual(set(out.dims), {"f1", "f2", "unit", "time"})
+        np.testing.assert_allclose(
+            out.sel(f1="a", f2="x").isel(unit=0).values, np.array([1.0, 2.0])
+        )
 
     def test_reduce_pca(self) -> None:
         """Run PCA reduction over trials."""

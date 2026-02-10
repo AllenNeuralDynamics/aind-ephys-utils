@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Sequence, Union
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from ..standards.conventions import C
@@ -92,16 +93,12 @@ def _grouped_reduce(
             raise ValueError(f"Unknown method {reduce!r}.")
         return getattr(grouped, reduce)(dim=dim, keep_attrs=True)
 
-    labels = list(zip(*(da[g].values for g in group_by)))
-    group_coord = xr.DataArray(labels, dims=(dim,), coords={dim: da[dim]})
-    da2 = da.assign_coords(_group=group_coord)
+    cond_index = pd.MultiIndex.from_arrays(
+        [np.asarray(da[g].values) for g in group_by], names=list(group_by)
+    )
+    da2 = da.assign_coords(_group=(dim, cond_index))
     grouped = da2.groupby("_group")
     if not hasattr(grouped, reduce):
         raise ValueError(f"Unknown method {reduce!r}.")
     out = getattr(grouped, reduce)(dim=dim, keep_attrs=True)
-    names = [
-        ",".join(f"{g}={v}" for g, v in zip(group_by, key))
-        for key in out.coords["_group"].values
-    ]
-    out = out.rename({"_group": "group"})
-    return out.assign_coords(group=np.asarray(names, dtype=object))
+    return out.unstack("_group")

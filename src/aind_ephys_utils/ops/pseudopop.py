@@ -48,6 +48,12 @@ def pseudopop(
         p = p.assign_coords({"session": (unit_dim, [sid] * p.sizes[unit_dim])})
         psths.append(p)
 
-    out = xr.concat(psths, dim=unit_dim, coords="minimal", compat="override")
+    out = xr.concat(
+        psths,
+        dim=unit_dim,
+        coords="minimal",
+        compat="override",
+        join="outer",
+    )
     out = out.assign_coords({unit_dim: np.arange(out.sizes[unit_dim])})
     return out
