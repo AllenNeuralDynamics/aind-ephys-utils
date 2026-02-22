@@ -927,6 +927,23 @@ class AlignRaggedTest(unittest.TestCase):
         result = align(spikes, events=np.array([0.4]), to="stim", window=(-0.2, 0.2))
         np.testing.assert_allclose(result.values[0, 0], np.array([-0.1, 0.1]))
 
+    def test_ragged_spikes_multi_trial_input_raises(self) -> None:
+        """Ragged align should reject already-trialized ragged input."""
+        data = np.empty((2, 1), dtype=object)
+        data[0, 0] = np.array([0.1, 0.2])
+        data[1, 0] = np.array([0.3, 0.4])
+        spikes = xr.DataArray(
+            data=data,
+            dims=("trial", "unit"),
+            coords={"trial": [0, 1], "unit": [0]},
+        )
+        events = xr.Dataset(
+            {"t": (("trial", "event"), [[0.2], [0.3]])},
+            coords={"trial": [0, 1], "event": ["stim"]},
+        )
+        with self.assertRaisesRegex(EphysAlignError, "single 'trial' entry"):
+            _ = align(spikes, events=events, to="stim", window=(-0.1, 0.1))
+
 
 class AlignWindowValidationTest(unittest.TestCase):
     """Tests for window validation in align."""

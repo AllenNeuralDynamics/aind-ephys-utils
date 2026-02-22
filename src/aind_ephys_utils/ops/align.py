@@ -190,15 +190,23 @@ def _align_ragged(
 ) -> xr.DataArray:
     """Align ragged spike data to event times.
 
-    Input da has shape (1, n_units) where da[0, u] contains all spikes for
-    unit u. Output has shape (n_trials, n_units) with spikes sliced around
-    each event time.
+    Input da must be session-time ragged spikes with shape (1, n_units), where
+    da[0, u] contains all spikes for unit u. Output has shape
+    (n_trials, n_units) with spikes sliced around each event time.
 
     Uses vectorized searchsorted for efficient boundary finding across all
     trials simultaneously.
     """
     tmin, tmax = window
     t0_vals = t0.values.astype(float)
+    n_input_trials = da.sizes[C.trial]
+    if n_input_trials != 1:
+        raise EphysAlignError(
+            "Ragged spikes align expects session-time input with a single "
+            f"'{C.trial}' entry (size=1). Got size={n_input_trials}. "
+            "If spikes are already trialized, skip align and use restrict/bin/"
+            "reduce operations directly."
+        )
     n_units = da.sizes[C.unit]
 
     # Process each unit with vectorized searchsorted
@@ -232,7 +240,9 @@ def align(
 
     - Continuous/binned: returns da with time shifted so event is at 0,
       sliced to window.
-    - Ragged spikes: subtract event time per trial, filter to window.
+    - Ragged spikes: expects session-time ragged spikes with trial size 1;
+      returns trialized spikes by subtracting each event time and filtering
+      to window.
     """
     validate(da)
     events = _normalize_events(events, to=to)
