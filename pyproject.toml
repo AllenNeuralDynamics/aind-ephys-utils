@@ -4,14 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aind_ephys_utils"
-description = "Utilities library for aind ephys team."
+description = "Helpful methods for exploring in vivo electrophysiology data"
 license = {text = "MIT"}
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
 classifiers = [
-    "Programming Language :: Python :: 3"
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14"
 ]
 readme = "README.md"
 dynamic = ["version"]
@@ -42,7 +48,7 @@ version = {attr = "aind_ephys_utils.__version__"}
 
 [tool.black]
 line-length = 79
-target_version = ['py36']
+target_version = ['py39']
 exclude = '''
 
 (
