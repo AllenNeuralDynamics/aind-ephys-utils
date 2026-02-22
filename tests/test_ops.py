@@ -638,6 +638,17 @@ class NormalizeEventsTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             _normalize_events({"t": [1.0, 2.0]})
 
+    def test_array_like_event_times(self) -> None:
+        """1D array-like event times are coerced to trial/event dataset."""
+        result = _normalize_events([1.0, 2.0], to="stim")
+        np.testing.assert_array_equal(result["t"].values, [[1.0], [2.0]])
+        np.testing.assert_array_equal(result["event"].values, ["stim"])
+
+    def test_array_like_requires_1d(self) -> None:
+        """2D array-like input is ambiguous and rejected."""
+        with self.assertRaises(EphysAlignError):
+            _normalize_events(np.array([[1.0, 2.0]]), to="stim")
+
 
 class GetEventTimesTest(unittest.TestCase):
     """Tests for _get_event_times helper."""
@@ -705,6 +716,18 @@ class AlignContinuousTest(unittest.TestCase):
         )
         with self.assertRaises(EphysValidationError):
             align(da, events=events, to="stim", window=(-0.2, 0.2))
+
+    def test_continuous_no_trial_array_like_events(self) -> None:
+        """No-trial continuous alignment accepts array-like event times."""
+        da = xr.DataArray(
+            np.arange(10, dtype=float),
+            dims=("time",),
+            coords={"time": np.linspace(0.0, 0.9, 10)},
+        )
+        result = align(da, events=[0.5], to="stim", window=(-0.2, 0.2))
+        np.testing.assert_allclose(
+            result["time"].values, [-0.2, -0.1, 0.0, 0.1]
+        )
 
 
 class AlignBinnedTest(unittest.TestCase):
@@ -807,6 +830,18 @@ class AlignRaggedTest(unittest.TestCase):
         result = align(spikes, events=events, to="stim", window=(-0.1, 0.1))
         self.assertEqual(len(result.values[0, 0]), 0)
         self.assertEqual(len(result.values[0, 1]), 1)
+
+    def test_ragged_spikes_array_like_events(self) -> None:
+        """Ragged spikes alignment accepts array-like event times."""
+        data = np.empty((1, 1), dtype=object)
+        data[0, 0] = np.array([0.1, 0.3, 0.5, 0.7])
+        spikes = xr.DataArray(
+            data=data,
+            dims=("trial", "unit"),
+            coords={"trial": [0], "unit": [0]},
+        )
+        result = align(spikes, events=np.array([0.4]), to="stim", window=(-0.2, 0.2))
+        np.testing.assert_allclose(result.values[0, 0], np.array([-0.1, 0.1]))
 
 
 class AlignWindowValidationTest(unittest.TestCase):

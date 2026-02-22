@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, Tuple, Union
 
+import numpy as np
 import xarray as xr
 
 from ..ops.align import align as _align
@@ -115,7 +116,9 @@ class EphysDataArrayAccessor:
 
     def align(
         self,
-        events: xr.DataArray,
+        events: Union[
+            xr.Dataset, xr.DataArray, Sequence[float], np.ndarray
+        ],
         to: str,
         window: Tuple[float, float],
     ) -> xr.DataArray:

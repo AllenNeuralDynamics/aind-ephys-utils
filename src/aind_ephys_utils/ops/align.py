@@ -8,7 +8,7 @@ The public entry point is `align`, which is used by the `.ephys.align` accessor.
 
 from __future__ import annotations
 
-from typing import Tuple, Union
+from typing import Sequence, Tuple, Union
 
 import numpy as np
 import xarray as xr
@@ -24,12 +24,18 @@ class EphysAlignError(ValueError):
     pass
 
 
-def _normalize_events(events: Union[xr.Dataset, xr.DataArray]) -> xr.Dataset:
+def _normalize_events(
+    events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
+    *,
+    to: str = "event",
+) -> xr.Dataset:
     """
     Accept:
       - Dataset with var "t" dims (trial, event)
       - DataArray of event times dims (trial, event)
       - DataArray of events with dims (trial, event, bound)
+      - 1D array-like of event times (trial,)
+      - scalar event time
     Return a Dataset with events["t"] always present.
     """
 
@@ -48,9 +54,29 @@ def _normalize_events(events: Union[xr.Dataset, xr.DataArray]) -> xr.Dataset:
                 f"events must contain variable {C.event_time_var!r}."
             )
         return events
-    raise TypeError(
-        f"events must be an xarray Dataset or DataArray, got {type(events)!r}."
+    if np.isscalar(events):
+        times = np.asarray([events], dtype=float)
+    else:
+        try:
+            times = np.asarray(events, dtype=float)
+        except Exception as e:
+            raise TypeError(
+                "events must be an xarray Dataset/DataArray or array-like "
+                "event times."
+            ) from e
+
+    if times.ndim != 1:
+        raise EphysAlignError(
+            "array-like events must be 1D event times with shape (trial,). "
+            f"Got shape {times.shape}."
+        )
+
+    event_times = xr.DataArray(
+        times[:, None],
+        dims=(C.trial, C.event),
+        coords={C.trial: np.arange(times.shape[0]), C.event: [to]},
     )
+    return xr.Dataset({C.event_time_var: event_times})
 
 
 def _get_event_times(events: xr.Dataset, to: str) -> xr.DataArray:
@@ -197,7 +223,7 @@ def _align_ragged(
 def align(
     da: xr.DataArray,
     *,
-    events: Union[xr.Dataset, xr.DataArray],
+    events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
     to: str,
     window: Tuple[float, float],
 ) -> xr.DataArray:
@@ -209,7 +235,7 @@ def align(
     - Ragged spikes: subtract event time per trial, filter to window.
     """
     validate(da)
-    events = _normalize_events(events)
+    events = _normalize_events(events, to=to)
     t0 = _get_event_times(events, to=to)
 
     tmin, tmax = window
