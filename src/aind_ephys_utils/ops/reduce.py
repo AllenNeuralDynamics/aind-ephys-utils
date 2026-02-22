@@ -100,7 +100,7 @@ def reduce(  # noqa: C901
     gpfa_options:
         Optional dictionary of GPFA configuration overrides, e.g.
         ``{"max_iters": 200, "freq_ll": 5, "fast_mode": True,
-        "gp_param_update_every": 5}``.
+        "gp_param_update_every": 5, "random_state": 0}``.
     """
     method = method.lower()
     if method not in (

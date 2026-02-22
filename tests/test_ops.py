@@ -488,6 +488,45 @@ class ReduceMethodsTest(unittest.TestCase):
                 gpfa_options={"gp_param_update_every": 0},
             )
 
+    def test_reduce_gpfa_random_state_reproducible(self) -> None:
+        """Fixed random_state should make GPFA outputs deterministic."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        opts = {"max_iters": 30, "freq_ll": 2, "random_state": 123}
+        out1 = reduce(
+            da,
+            method="gpfa",
+            dim="unit",
+            n_components=2,
+            gpfa_options=opts,
+        )
+        out2 = reduce(
+            da,
+            method="gpfa",
+            dim="unit",
+            n_components=2,
+            gpfa_options=opts,
+        )
+        np.testing.assert_allclose(
+            out1["projections"].values, out2["projections"].values
+        )
+        np.testing.assert_allclose(
+            out1["weights"].values, out2["weights"].values
+        )
+
+    def test_reduce_gpfa_options_invalid_random_state(self) -> None:
+        """random_state must be int or NumPy RNG object."""
+        da = self._make_reduce_data()
+        da = da - da.min() + 1e-6
+        with self.assertRaises(ValueError):
+            _ = reduce(
+                da,
+                method="gpfa",
+                dim="unit",
+                n_components=2,
+                gpfa_options={"random_state": "bad-seed"},
+            )
+
     def test_reduce_coding_direction(self) -> None:
         """Coding direction returns a single discriminant component."""
         da = self._make_reduce_data()

@@ -160,6 +160,7 @@ def _fit_gpfa(  # noqa C901
         "r_force_diagonal",
         "fast_mode",
         "gp_param_update_every",
+        "random_state",
     }
     unknown = set(opts).difference(allowed)
     if unknown:
@@ -177,6 +178,7 @@ def _fit_gpfa(  # noqa C901
     r_force_diagonal = bool(opts.get("r_force_diagonal", True))
     fast_mode = bool(opts.get("fast_mode", False))
     gp_param_update_every = opts.get("gp_param_update_every", None)
+    random_state = opts.get("random_state", None)
     if gp_param_update_every is None:
         gp_param_update_every = 5 if fast_mode else 1
     gp_param_update_every = int(gp_param_update_every)
@@ -196,9 +198,10 @@ def _fit_gpfa(  # noqa C901
     if gp_param_update_every < 1:
         raise ValueError("gpfa_options['gp_param_update_every'] must be >= 1.")
 
-    seqs_train = _cut_trials(seqs, seg_length=float(seg_length))
+    rng = _resolve_rng(random_state)
+    seqs_train = _cut_trials(seqs, seg_length=float(seg_length), rng=rng)
     if len(seqs_train) == 0:
-        seqs_train = _cut_trials(seqs, seg_length=np.inf)
+        seqs_train = _cut_trials(seqs, seg_length=np.inf, rng=rng)
 
     y_all = np.hstack(seqs_train["y"])
     fa = FactorAnalysis(
@@ -606,8 +609,35 @@ def _make_precomp(seqs: np.ndarray, x_dim: int) -> np.ndarray:
     return precomp
 
 
-def _cut_trials(seq_in: np.ndarray, seg_length: float = 20) -> np.ndarray:
+def _resolve_rng(
+    random_state: Optional[
+        Union[int, np.random.Generator, np.random.RandomState]
+    ],
+) -> Union[np.random.Generator, np.random.RandomState]:
+    """Resolve a random state into a NumPy RNG object."""
+    if random_state is None:
+        return np.random.default_rng()
+    if isinstance(random_state, np.random.Generator):
+        return random_state
+    if isinstance(random_state, np.random.RandomState):
+        return random_state
+    if isinstance(random_state, (int, np.integer)):
+        return np.random.default_rng(int(random_state))
+    raise ValueError(
+        "gpfa_options['random_state'] must be an int, "
+        "numpy.random.Generator, or numpy.random.RandomState."
+    )
+
+
+def _cut_trials(
+    seq_in: np.ndarray,
+    seg_length: float = 20,
+    *,
+    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
+) -> np.ndarray:
     """Extract equal-length trial segments, matching Elephant's approach."""
+    if rng is None:
+        rng = np.random.default_rng()
     if seg_length == 0:
         raise ValueError("At least 1 extracted trial must be returned.")
     if np.isinf(seg_length):
@@ -629,7 +659,7 @@ def _cut_trials(seq_in: np.ndarray, seg_length: float = 20) -> np.ndarray:
         else:
             total_ol = (seg_len * num_seg) - t
             probs = np.ones(num_seg - 1, float) / (num_seg - 1)
-            rand_ol = np.random.multinomial(total_ol, probs)
+            rand_ol = rng.multinomial(total_ol, probs)
             cum_ol = np.hstack([0, np.cumsum(rand_ol)])
 
         seg = np.empty(num_seg, dtype=dtype_seq_out)
