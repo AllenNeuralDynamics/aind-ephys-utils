@@ -116,9 +116,7 @@ class EphysDataArrayAccessor:
 
     def align(
         self,
-        events: Union[
-            xr.Dataset, xr.DataArray, Sequence[float], np.ndarray
-        ],
+        events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
         to: str,
         window: Tuple[float, float],
     ) -> xr.DataArray:

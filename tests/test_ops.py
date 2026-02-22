@@ -448,7 +448,9 @@ class ReduceMethodsTest(unittest.TestCase):
         da = da.assign_coords(
             block=("trial", np.array([0, 0, 1, 1, 1, 1], dtype=int))
         )
-        with self.assertRaisesRegex(ValueError, "complete condition combinations"):
+        with self.assertRaisesRegex(
+            ValueError, "complete condition combinations"
+        ):
             _ = reduce(
                 da,
                 method="dpca",
@@ -924,7 +926,9 @@ class AlignRaggedTest(unittest.TestCase):
             dims=("trial", "unit"),
             coords={"trial": [0], "unit": [0]},
         )
-        result = align(spikes, events=np.array([0.4]), to="stim", window=(-0.2, 0.2))
+        result = align(
+            spikes, events=np.array([0.4]), to="stim", window=(-0.2, 0.2)
+        )
         np.testing.assert_allclose(result.values[0, 0], np.array([-0.1, 0.1]))
 
     def test_ragged_spikes_multi_trial_input_raises(self) -> None:

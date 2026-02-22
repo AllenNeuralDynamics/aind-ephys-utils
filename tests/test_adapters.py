@@ -212,6 +212,7 @@ class AdapterPolarsTest(unittest.TestCase):
     """Ensure polars inputs work across adapter paths."""
 
     def setUp(self) -> None:
+        """Skip polars tests when the optional dependency is unavailable."""
         if pl is None:
             self.skipTest("polars is not installed")
 
