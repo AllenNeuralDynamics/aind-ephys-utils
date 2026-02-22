@@ -39,15 +39,20 @@ def psth(
     if dim not in da.dims:
         return da.copy()
 
-    if method is not None:
-        reduce = method
-    reduce = reduce.lower()
+    if not isinstance(method, str):
+        raise ValueError("method must be a non-empty string.")
+    method_name = method.strip().lower()
+    if method_name == "":
+        raise ValueError("method must be a non-empty string.")
+
     if group_by is not None and keep_trials:
         raise ValueError(
             "keep_trials=True is not supported when group_by is set."
         )
 
-    summary = _grouped_reduce(da, dim=dim, reduce=reduce, group_by=group_by)
+    summary = _grouped_reduce(
+        da, dim=dim, reduce=method_name, group_by=group_by
+    )
 
     if not keep_trials:
         summary.attrs = dict(da.attrs)

@@ -171,6 +171,26 @@ class OpsTest(unittest.TestCase):
                 keep_trials=True,
             )
 
+    def test_psth_invalid_method_none(self) -> None:
+        """method=None should raise a clear error."""
+        da = xr.DataArray(
+            [[1.0, 3.0], [3.0, 5.0]],
+            dims=("trial", "time"),
+            coords={"trial": [0, 1], "time": [0, 1]},
+        )
+        with self.assertRaisesRegex(ValueError, "non-empty string"):
+            _ = psth(da, dim="trial", method=None)
+
+    def test_psth_invalid_method_type(self) -> None:
+        """Non-string method should raise a clear error."""
+        da = xr.DataArray(
+            [[1.0, 3.0], [3.0, 5.0]],
+            dims=("trial", "time"),
+            coords={"trial": [0, 1], "time": [0, 1]},
+        )
+        with self.assertRaisesRegex(ValueError, "non-empty string"):
+            _ = psth(da, dim="trial", method=123)  # type: ignore[arg-type]
+
     def test_pseudopop_grouped_concat(self) -> None:
         """Concatenate grouped PSTHs across sessions on unit axis."""
         da0 = xr.DataArray(
