@@ -9,7 +9,6 @@ import xarray as xr
 
 from ...standards.conventions import C
 
-
 RaggedSession = Sequence[object]
 RaggedTrial = Sequence[Sequence[object]]
 DataInput = Union[xr.DataArray, np.ndarray, RaggedSession, RaggedTrial]
@@ -141,7 +140,9 @@ def ragged_dataarray_to_session_list(da: xr.DataArray) -> list[np.ndarray]:
     """Convert ragged DataArray to session-aligned ragged list."""
     da_u = da.transpose(C.trial, C.unit)
     if da_u.sizes.get(C.trial, 0) != 1:
-        raise ValueError("Expected trial dimension of size 1 for session ragged.")
+        raise ValueError(
+            "Expected trial dimension of size 1 for session ragged."
+        )
     out: list[np.ndarray] = []
     for u in range(da_u.sizes[C.unit]):
         out.append(_coerce_spike_array(da_u.data[0, u]))
@@ -174,7 +175,10 @@ def to_dataarray_input(
         return ragged_trial_to_dataarray(data, coords=coords), "ragged_trial"
 
     if is_ragged_session_list(data):
-        return ragged_session_to_dataarray(data, coords=coords), "ragged_session"
+        return (
+            ragged_session_to_dataarray(data, coords=coords),
+            "ragged_session",
+        )
 
     arr = np.asarray(data)
     if arr.dtype == object and arr.ndim == 2:
@@ -206,7 +210,9 @@ def from_dataarray_output(  # noqa: C901
 ) -> Union[xr.DataArray, np.ndarray, list[np.ndarray], list[list[np.ndarray]]]:
     """Convert a DataArray output back to requested user-facing type."""
     if return_type not in ("auto", "xarray", "numpy"):
-        raise ValueError("return_type must be one of 'auto', 'xarray', 'numpy'.")
+        raise ValueError(
+            "return_type must be one of 'auto', 'xarray', 'numpy'."
+        )
 
     if return_type == "xarray":
         return out

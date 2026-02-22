@@ -3,9 +3,12 @@
 import unittest
 
 import matplotlib
+import numpy as np
+import xarray as xr
 
 from aind_ephys_utils.plots.annotations import add_scale_bars, annotate_events
 from aind_ephys_utils.plots.colors import get_color_for_region
+from aind_ephys_utils.plots.raster import raster
 
 
 class PlotHelpersTest(unittest.TestCase):
@@ -66,3 +69,38 @@ class PlotHelpersTest(unittest.TestCase):
         labels = [t.get_text() for t in ax.texts]
         self.assertIn("500 ms", labels)
         self.assertIn("2 Hz", labels)
+
+    def test_raster_single_unit_many_trials_uses_full_y_range(self) -> None:
+        """Single-unit rasters should span all trials on the y-axis."""
+        n_trials = 200
+        data = np.empty((n_trials, 1), dtype=object)
+        for i in range(n_trials):
+            data[i, 0] = np.array([0.1, 0.2], dtype=float)
+        spikes = xr.DataArray(
+            data,
+            dims=("trial", "unit"),
+            coords={"trial": np.arange(n_trials), "unit": [0]},
+        )
+        ax = raster(spikes)
+        y0, y1 = ax.get_ylim()
+        self.assertLessEqual(y0, -0.5)
+        self.assertGreaterEqual(y1, n_trials - 0.5)
+        # Should not collapse to a single center tick for unit labels.
+        self.assertGreater(len(ax.get_yticks()), 1)
+
+    def test_raster_accepts_markersize_and_alpha(self) -> None:
+        """Raster should forward markersize and alpha to scatter artists."""
+        n_trials = 5
+        data = np.empty((n_trials, 1), dtype=object)
+        for i in range(n_trials):
+            data[i, 0] = np.array([0.1, 0.2], dtype=float)
+        spikes = xr.DataArray(
+            data,
+            dims=("trial", "unit"),
+            coords={"trial": np.arange(n_trials), "unit": [0]},
+        )
+        ax = raster(spikes, markersize=5.0, alpha=0.2)
+        self.assertGreaterEqual(len(ax.collections), 1)
+        sizes = ax.collections[0].get_sizes()
+        self.assertTrue(np.allclose(sizes, 5.0))
+        self.assertAlmostEqual(float(ax.collections[0].get_alpha()), 0.2)

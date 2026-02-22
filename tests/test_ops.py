@@ -433,7 +433,10 @@ class OpsTest(unittest.TestCase):
 
     def test_bin_ragged_session_list_input(self) -> None:
         """bin should accept session ragged list input."""
-        spikes = [np.array([0.05, 0.15], dtype=float), np.array([0.02], dtype=float)]
+        spikes = [
+            np.array([0.05, 0.15], dtype=float),
+            np.array([0.02], dtype=float),
+        ]
         out = bin(spikes, dt=0.1, window=(0.0, 0.2), output="count")
         self.assertIsInstance(out, np.ndarray)
         self.assertEqual(out.shape, (1, 2, 2))
@@ -977,7 +980,9 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.4]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events["t"], to="stim", window=(-0.2, 0.2))
+        result = align(
+            spikes, events=events["t"], to="stim", window=(-0.2, 0.2)
+        )
         # Spikes at 0.3, 0.5 are within window (0.2-0.6 absolute)
         # Aligned: 0.3-0.4=-0.1, 0.5-0.4=0.1
         aligned_unit0 = result.values[0, 0]
@@ -999,7 +1004,9 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.5]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
+        result = align(
+            spikes, events=events["t"], to="stim", window=(-0.1, 0.1)
+        )
         self.assertEqual(len(result.values[0, 0]), 0)
 
     def test_ragged_spikes_missing_trial_dim(self) -> None:
@@ -1033,7 +1040,9 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.5]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
+        result = align(
+            spikes, events=events["t"], to="stim", window=(-0.1, 0.1)
+        )
         self.assertEqual(len(result.values[0, 0]), 0)
         self.assertEqual(len(result.values[0, 1]), 1)
 
@@ -1066,7 +1075,9 @@ class AlignRaggedTest(unittest.TestCase):
             coords={"trial": [0, 1], "event": ["stim"]},
         )
         with self.assertRaisesRegex(EphysAlignError, "single 'trial' entry"):
-            _ = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
+            _ = align(
+                spikes, events=events["t"], to="stim", window=(-0.1, 0.1)
+            )
 
 
 class AlignWindowValidationTest(unittest.TestCase):

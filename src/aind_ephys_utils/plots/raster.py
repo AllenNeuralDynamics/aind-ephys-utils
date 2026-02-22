@@ -33,7 +33,8 @@ def raster(  # noqa: C901
     ax: Optional[Union[plt.Axes, Sequence[plt.Axes]]] = None,
     color: str = "k",
     linewidth: float = 0.8,
-    alpha: float = 1.0,
+    markersize: Optional[float] = None,
+    alpha: Optional[float] = 1.0,
     rasterized: bool = True,
     show_ylabel: bool = True,
     unit_gap: int = 3,
@@ -85,8 +86,8 @@ def raster(  # noqa: C901
         Optional (tmin, tmax) for filtering and x-limits.
     ax:
         Matplotlib Axes to draw on; created if None.
-    color, linewidth, alpha:
-        Styling for tick marks.
+    color, linewidth, markersize, alpha:
+        Styling for raster markers.
     rasterized:
         If True, rasterize artists for large figures.
     show_ylabel:
@@ -153,6 +154,7 @@ def raster(  # noqa: C901
                 tlim=tlim,
                 color=color,
                 linewidth=linewidth,
+                markersize=markersize,
                 alpha=alpha,
                 rasterized=rasterized,
                 show_ylabel=show_ylabel,
@@ -197,6 +199,7 @@ def raster(  # noqa: C901
         tlim=tlim,
         color=color,
         linewidth=linewidth,
+        markersize=markersize,
         alpha=alpha,
         rasterized=rasterized,
         show_ylabel=show_ylabel,
@@ -239,7 +242,8 @@ def _plot_raster_on_axis(  # noqa: C901
     tlim: Optional[tuple[float, float]],
     color: str,
     linewidth: float,
-    alpha: float,
+    markersize: Optional[float],
+    alpha: Optional[float],
     rasterized: bool,
     show_ylabel: bool,
     unit_gap: int,
@@ -269,22 +273,31 @@ def _plot_raster_on_axis(  # noqa: C901
             per_unit.append(spikes.sel({C.unit: u}))
     else:
         per_unit.append(spikes)
+    if len(per_unit) <= 1:
+        # For single-unit rasters, keep trial-oriented y-axis ticks.
+        show_unit_labels = False
 
     unit_centers = []
     unit_labels = []
     if group_dim == C.unit:
-        da_sorted = _sort_by_dim(spikes, sort_by=sort_by, dim=group_dim)
-        groups = _group_by_dim(da_sorted, group_by=group_by, dim=group_dim)
+        sort_idx = _sort_indices_by_dim(spikes, sort_by=sort_by, dim=group_dim)
+        groups = _group_indices_by_dim(
+            spikes, group_by=group_by, dim=group_dim, sort_idx=sort_idx
+        )
         allow_region = _allow_region_colors(group_by)
         colors = _resolve_group_colors(
             groups, color=color, color_by=color_by, allow_region=allow_region
         )
-        for (label, da, _), c in zip(groups, colors):
-            if C.trial in da.dims:
-                da_vals = da.isel({C.trial: 0}).values
-            else:
-                da_vals = da.values
-            seq = _as_list_of_1d_arrays(np.asarray(da_vals, dtype=object))
+        if C.trial in spikes.dims:
+            base_vals = np.asarray(
+                spikes.isel({C.trial: 0}).values, dtype=object
+            ).ravel()
+        else:
+            base_vals = np.asarray(spikes.values, dtype=object).ravel()
+
+        for (label, idx, _), c in zip(groups, colors):
+            seq_vals = base_vals[idx]
+            seq = _as_list_of_1d_arrays(np.asarray(seq_vals, dtype=object))
             if tlim is not None:
                 tmin, tmax = tlim
                 seq = [
@@ -292,19 +305,24 @@ def _plot_raster_on_axis(  # noqa: C901
                 ]
 
             lineoffsets = np.arange(y0, y0 + len(seq))
-            artists = ax.eventplot(
-                seq,
-                lineoffsets=lineoffsets,
-                linelengths=1.0,
-                colors=c,
-                linewidths=linewidth,
-                alpha=alpha,
-                orientation="horizontal",
-            )
-            if rasterized:
-                for a in artists:
+            x, y = _flatten_for_scatter(seq, lineoffsets)
+            if x.size:
+                artist = ax.scatter(
+                    x,
+                    y,
+                    s=(
+                        float(markersize)
+                        if markersize is not None
+                        else max(1.0, linewidth * 8.0)
+                    ),
+                    c=c,
+                    alpha=alpha,
+                    marker=".",
+                    linewidths=0,
+                )
+                if rasterized:
                     try:
-                        a.set_rasterized(True)
+                        artist.set_rasterized(True)
                     except Exception:
                         pass
 
@@ -320,8 +338,12 @@ def _plot_raster_on_axis(  # noqa: C901
             y0 += len(seq)
     else:
         for ui, da_u in enumerate(per_unit):
-            da_u = _sort_by_dim(da_u, sort_by=sort_by, dim=group_dim)
-            groups = _group_by_dim(da_u, group_by=group_by, dim=group_dim)
+            sort_idx = _sort_indices_by_dim(
+                da_u, sort_by=sort_by, dim=group_dim
+            )
+            groups = _group_indices_by_dim(
+                da_u, group_by=group_by, dim=group_dim, sort_idx=sort_idx
+            )
             allow_region = _allow_region_colors(group_by)
             colors = _resolve_group_colors(
                 groups,
@@ -330,11 +352,10 @@ def _plot_raster_on_axis(  # noqa: C901
                 allow_region=allow_region,
             )
             unit_start = y0
+            da_u_vals = np.asarray(da_u.values, dtype=object).ravel()
 
-            for (label, da, _), c in zip(groups, colors):
-                seq = _as_list_of_1d_arrays(
-                    np.asarray(da.values, dtype=object)
-                )
+            for (label, idx, _), c in zip(groups, colors):
+                seq = _as_list_of_1d_arrays(da_u_vals[idx])
                 if tlim is not None:
                     tmin, tmax = tlim
                     seq = [
@@ -343,19 +364,24 @@ def _plot_raster_on_axis(  # noqa: C901
                     ]
 
                 lineoffsets = np.arange(y0, y0 + len(seq))
-                artists = ax.eventplot(
-                    seq,
-                    lineoffsets=lineoffsets,
-                    linelengths=1.0,
-                    colors=c,
-                    linewidths=linewidth,
-                    alpha=alpha,
-                    orientation="horizontal",
-                )
-                if rasterized:
-                    for a in artists:
+                x, y = _flatten_for_scatter(seq, lineoffsets)
+                if x.size:
+                    artist = ax.scatter(
+                        x,
+                        y,
+                        s=(
+                            float(markersize)
+                            if markersize is not None
+                            else max(1.0, linewidth * 8.0)
+                        ),
+                        c=c,
+                        alpha=alpha,
+                        marker=".",
+                        linewidths=0,
+                    )
+                    if rasterized:
                         try:
-                            a.set_rasterized(True)
+                            artist.set_rasterized(True)
                         except Exception:
                             pass
 
@@ -390,6 +416,9 @@ def _plot_raster_on_axis(  # noqa: C901
     if show_unit_labels and unit_centers:
         ax.set_yticks(unit_centers)
         ax.set_yticklabels(unit_labels)
+    if y0 > 0:
+        # Explicit limits avoid backend-dependent autoscale clipping.
+        ax.set_ylim(-0.5, y0 - 0.5)
     if set_xlabel:
         time_unit = spikes.attrs.get(C.attr_time_unit, C.default_time_unit)
         ax.set_xlabel(f"Time ({time_unit})")
@@ -411,47 +440,42 @@ def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
     return out
 
 
-def _group_by_dim(
-    da: xr.DataArray,
-    *,
-    group_by: Optional[Union[str, Sequence[str]]],
-    dim: Optional[str],
-) -> list[Tuple[Optional[str], xr.DataArray]]:
-    """Split a DataArray into groups by one or more coords along dim."""
-    if group_by is None:
-        return [(None, da, None)]
-    if dim is None:
-        raise ValueError("group_by requires a trial or unit dimension.")
-    if isinstance(group_by, str):
-        group_by = [group_by]
-    for g in group_by:
-        if g not in da.coords:
-            raise ValueError(f"group_by coord {g!r} not found in DataArray.")
-    for g in group_by:
-        if dim not in da[g].dims:
-            raise ValueError(
-                f"group_by coord {g!r} must have '{dim}' dimension."
-            )
-    if len(group_by) == 1:
-        key = group_by[0]
-        return [(f"{key}={k}", v, k) for k, v in da.groupby(key)]
-
-    labels = list(zip(*(da[g].values for g in group_by)))
-    group_coord = xr.DataArray(labels, dims=(dim,), coords={dim: da[dim]})
-    da2 = da.assign_coords(_group=group_coord)
-    out: list[Tuple[Optional[str], xr.DataArray, Any]] = []
-    for key, sub in da2.groupby("_group"):
-        label = ",".join(f"{g}={v}" for g, v in zip(group_by, key))
-        out.append((label, sub, key))
-    return out
+def _flatten_for_scatter(
+    seq: Sequence[np.ndarray], lineoffsets: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten ragged spike vectors and matching y offsets for scatter."""
+    if not seq:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    lengths = np.asarray([len(s) for s in seq], dtype=int)
+    total = int(lengths.sum())
+    if total == 0:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    x = np.concatenate([s for s in seq if len(s) > 0]).astype(
+        float, copy=False
+    )
+    y = np.repeat(lineoffsets.astype(float, copy=False), lengths)
+    return x, y
 
 
-def _sort_by_dim(
+def _to_hashable(value: Any) -> Any:
+    """Convert values used as dict keys into hashable forms."""
+    if np.isscalar(value) or isinstance(value, (str, bytes)):
+        return value
+    if isinstance(value, np.ndarray):
+        return tuple(value.tolist())
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return value
+
+
+def _sort_indices_by_dim(
     da: xr.DataArray, *, sort_by: Optional[str], dim: Optional[str]
-) -> xr.DataArray:
-    """Sort by a scalar coordinate along dim."""
+) -> np.ndarray:
+    """Return stable sorted indices along dim using NumPy."""
+    n = da.sizes.get(dim, 0) if dim is not None else int(np.asarray(da).size)
+    base = np.arange(n, dtype=int)
     if sort_by is None:
-        return da
+        return base
     if sort_by not in da.coords:
         raise ValueError(f"sort_by coord {sort_by!r} not found in DataArray.")
     if dim is None:
@@ -463,7 +487,66 @@ def _sort_by_dim(
         )
     if coord.ndim != 1:
         raise ValueError(f"sort_by coord {sort_by!r} must be 1D over '{dim}'.")
-    return da.sortby(sort_by)
+    vals = np.asarray(coord.values)
+    return np.argsort(vals, kind="stable")
+
+
+def _group_indices_by_dim(  # noqa: C901
+    da: xr.DataArray,
+    *,
+    group_by: Optional[Union[str, Sequence[str]]],
+    dim: Optional[str],
+    sort_idx: np.ndarray,
+) -> list[Tuple[Optional[str], np.ndarray, Any]]:
+    """Group index positions by one or more coords along dim using NumPy."""
+    if group_by is None:
+        return [(None, sort_idx, None)]
+    if dim is None:
+        raise ValueError("group_by requires a trial or unit dimension.")
+    if isinstance(group_by, str):
+        group_by = [group_by]
+
+    for g in group_by:
+        if g not in da.coords:
+            raise ValueError(f"group_by coord {g!r} not found in DataArray.")
+        if dim not in da[g].dims:
+            raise ValueError(
+                f"group_by coord {g!r} must have '{dim}' dimension."
+            )
+
+    if len(group_by) == 1:
+        g = group_by[0]
+        key_vals = np.asarray(da[g].values)[sort_idx]
+        name_fn = lambda k: f"{g}={k}"  # noqa: E731
+    else:
+        arrays = [np.asarray(da[g].values)[sort_idx] for g in group_by]
+        key_vals = list(zip(*arrays))
+        name_fn = lambda k: ",".join(  # noqa: E731
+            f"{g}={v}" for g, v in zip(group_by, k)
+        )
+
+    order: list[Any] = []
+    buckets: Dict[Any, list[int]] = {}
+    labels: Dict[Any, Any] = {}
+    for pos, key_raw in zip(sort_idx, key_vals):
+        key = _to_hashable(key_raw)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+            labels[key] = key_raw
+        buckets[key].append(int(pos))
+
+    out: list[Tuple[Optional[str], np.ndarray, Any]] = []
+    for key in order:
+        label_val = labels[key]
+        out.append(
+            (
+                name_fn(label_val),
+                np.asarray(buckets[key], dtype=int),
+                label_val,
+            )
+        )
+    return out
 
 
 def _allow_region_colors(
@@ -478,7 +561,7 @@ def _allow_region_colors(
 
 
 def _resolve_group_colors(
-    groups: Sequence[Tuple[Optional[str], xr.DataArray, Any]],
+    groups: Sequence[Tuple[Optional[str], np.ndarray, Any]],
     *,
     color: str,
     color_by: Optional[Dict[Any, str]],

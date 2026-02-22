@@ -99,8 +99,7 @@ def _get_event_times(events: xr.DataArray, to: str) -> xr.DataArray:
         return events.sel({C.event: to})
     except KeyError as e:
         raise EphysAlignError(
-            f"Could not find event label {to!r} in "
-            "event coordinates."
+            f"Could not find event label {to!r} in " "event coordinates."
         ) from e
 
 

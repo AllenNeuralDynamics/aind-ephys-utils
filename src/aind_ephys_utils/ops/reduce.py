@@ -628,9 +628,7 @@ def _reduce_supervised(  # noqa: C901
 
 def _normalize_supervised_labels(
     da: xr.DataArray,
-    labels: Union[
-        str, xr.DataArray, Sequence[Union[str, xr.DataArray]]
-    ],
+    labels: Union[str, xr.DataArray, Sequence[Union[str, xr.DataArray]]],
 ) -> list[Tuple[str, xr.DataArray]]:
     """Normalize supervised labels into a list of named DataArrays."""
     if isinstance(labels, str):
@@ -648,7 +646,9 @@ def _normalize_supervised_labels(
             out.append((str(name), item))
             continue
         if item not in da.coords:
-            raise ValueError(f"label coord {item!r} not found in DataArray coords.")
+            raise ValueError(
+                f"label coord {item!r} not found in DataArray coords."
+            )
         out.append((str(item), da.coords[item]))
     return out
 
