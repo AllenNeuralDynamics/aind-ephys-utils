@@ -7,6 +7,11 @@ import pandas as pd
 
 from aind_ephys_utils.adapters import from_dataframe
 
+try:
+    import polars as pl
+except ImportError:  # pragma: no cover - optional dependency
+    pl = None
+
 
 class AdapterTest(unittest.TestCase):
     """Ensure adapter ops path works end-to-end."""
@@ -201,3 +206,64 @@ class AdapterTest(unittest.TestCase):
                 long_vals,
                 err_msg=f"Mismatch for event {event_name}",
             )
+
+
+class AdapterPolarsTest(unittest.TestCase):
+    """Ensure polars inputs work across adapter paths."""
+
+    def setUp(self) -> None:
+        if pl is None:
+            self.skipTest("polars is not installed")
+
+    def test_from_dataframe_polars_events_long(self) -> None:
+        """Build long-format events from a polars DataFrame."""
+        trials_df = pl.DataFrame(
+            {
+                "trial_id": [0, 0, 1, 1],
+                "event_name": ["go_cue", "delay", "go_cue", "delay"],
+                "event_time": [0.1, 0.15, 1.1, 1.15],
+                "event_end": [0.1, 0.4, 1.1, 1.4],
+                "choice": ["L", "L", "R", "R"],
+            }
+        )
+        events = from_dataframe(
+            trials_df,
+            trial_id_col="trial_id",
+            long_event_col="event_name",
+            long_time_col="event_time",
+            long_end_time_col="event_end",
+        )
+        self.assertEqual(events.dims, ("trial", "event", "bound"))
+        self.assertEqual(events.sizes["trial"], 2)
+        self.assertEqual(events.coords["choice"].dims, ("trial",))
+
+    def test_from_dataframe_polars_units_with_trials(self) -> None:
+        """Build ragged spikes from polars units+trials DataFrames."""
+        units_df = pl.DataFrame(
+            {
+                "unit_id": [0, 1],
+                "spike_times": [[0.05, 0.15, 0.35], [0.02, 0.25]],
+                "region": ["VISp", "MOs"],
+            }
+        )
+        trials_df = pl.DataFrame(
+            {
+                "trial_id": [0, 1],
+                "trial_start": [0.0, 0.3],
+                "trial_end": [0.2, 0.5],
+                "choice": ["L", "R"],
+            }
+        )
+        da = from_dataframe(
+            units_df,
+            trials_df,
+            unit_id_col="unit_id",
+            trial_id_col="trial_id",
+            spike_times_col="spike_times",
+            trial_start_col="trial_start",
+            trial_end_col="trial_end",
+        )
+        self.assertEqual(da.dims, ("trial", "unit"))
+        self.assertEqual(da.sizes["trial"], 2)
+        self.assertEqual(da.coords["region"].dims, ("unit",))
+        self.assertEqual(da.coords["choice"].dims, ("trial",))

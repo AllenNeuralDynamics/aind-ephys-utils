@@ -80,6 +80,44 @@ def _default_coords(df: pd.DataFrame, exclude: set[str]) -> list[str]:
     return [c for c in df.columns if c not in exclude]
 
 
+def _col_to_numpy(df, col: str, *, dtype=None) -> np.ndarray:
+    """Return a column as a numpy array for pandas or polars DataFrames."""
+    if col not in df.columns:
+        raise KeyError(f"{col} not in DataFrame")
+
+    s = df[col]
+
+    # ---- pandas ----
+    if isinstance(s, pd.Series):
+        if dtype is None:
+            return s.to_numpy()
+        return s.to_numpy(dtype=dtype)
+
+    # ---- polars ----
+    try:
+        import polars as pl
+
+        if isinstance(s, pl.Series):
+            arr = s.to_numpy()
+            if dtype is not None:
+                arr = arr.astype(dtype, copy=False)
+            return arr
+    except ImportError:
+        pass
+
+    # ---- fallback ----
+    arr = np.asarray(s)
+    if dtype is not None:
+        arr = arr.astype(dtype, copy=False)
+    return arr
+
+
+def _col_to_str_numpy(df, col: str) -> np.ndarray:
+    """Return a column as an object array of strings."""
+    arr = _col_to_numpy(df, col)
+    return np.asarray([str(v) for v in arr], dtype=object)
+
+
 def _ensure_1d_float_array(x: Any, *, ctx: str) -> np.ndarray:
     """Convert a spike-time entry into a 1D float array.
 
@@ -138,16 +176,10 @@ def _col_to_float_numpy(df, col):
     if col not in df.columns:
         raise KeyError(f"{col} not in DataFrame")
 
-    s = df[col]
-
     # ---- pandas ----
-    try:
-        import pandas as pd
-
-        if isinstance(s, pd.Series):
-            return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
-    except ImportError:
-        pass
+    s = df[col]
+    if isinstance(s, pd.Series):
+        return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
 
     # ---- polars ----
     try:
@@ -165,7 +197,7 @@ def _col_to_float_numpy(df, col):
         pass
 
     # ---- fallback (numpy / list-like) ----
-    return np.asarray(s, dtype=float)
+    return _col_to_numpy(df, col, dtype=float)
 
 
 def _infer_window_from_time(
@@ -290,7 +322,7 @@ def _build_events(  # noqa: C901
         # Preserve event label order
         seen_events = set()
         event_names: List[str] = []
-        for v in trials_df[long_event_col].astype(str).to_numpy():
+        for v in _col_to_str_numpy(trials_df, long_event_col):
             if v not in seen_events:
                 event_names.append(v)
                 seen_events.add(v)
@@ -407,7 +439,7 @@ def _build_events(  # noqa: C901
         # For wide format, use all rows directly
         for c in trial_coords:
             events = events.assign_coords(
-                {c: (C.trial, trials_df[c].to_numpy())}
+                {c: (C.trial, _col_to_numpy(trials_df, c))}
             )
 
     return events
@@ -460,7 +492,7 @@ def _build_spikes_units_only(
         unit_coords = _default_coords(units_df, exclude)
 
     for c in unit_coords:
-        da = da.assign_coords({c: (C.unit, units_df[c].to_numpy())})
+        da = da.assign_coords({c: (C.unit, _col_to_numpy(units_df, c))})
 
     da.attrs[C.attr_valid_intervals] = [_infer_valid_interval(da)]
     return da
@@ -595,7 +627,7 @@ def _build_spikes_with_trials(  # noqa: C901
         unit_coords = _default_coords(units_df, exclude)
 
     for c in unit_coords:
-        da = da.assign_coords({c: (C.unit, units_df[c].to_numpy())})
+        da = da.assign_coords({c: (C.unit, _col_to_numpy(units_df, c))})
 
     if trial_coords is None:
         exclude = {trial_start_col, trial_end_col}
@@ -606,7 +638,7 @@ def _build_spikes_with_trials(  # noqa: C901
         trial_coords = _default_coords(trials_df, exclude)
 
     for c in trial_coords:
-        da = da.assign_coords({c: (C.trial, trials_df[c].to_numpy())})
+        da = da.assign_coords({c: (C.trial, _col_to_numpy(trials_df, c))})
 
     da.attrs[C.attr_time_unit] = time_unit
     da.attrs[C.attr_timebase] = "trial"
