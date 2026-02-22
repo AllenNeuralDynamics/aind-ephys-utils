@@ -40,6 +40,9 @@ dev = [
     'furo'
 ]
 
+[tool.setuptools]
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
