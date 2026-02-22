@@ -80,6 +80,16 @@ class OpsTest(unittest.TestCase):
         out = baseline(da, window=(0.0, 1.0), mode="subtract")
         np.testing.assert_allclose(out.values[0, 0:2], [-0.5, 0.5])
 
+    def test_baseline_zscore_zero_std_returns_zero(self) -> None:
+        """Zero-variance baseline slices should produce 0, not NaN/inf."""
+        da = xr.DataArray(
+            [[1.0, 1.0, 1.0, 1.0]],
+            dims=("trial", "time"),
+            coords={"time": [0.0, 1.0, 2.0, 3.0]},
+        )
+        out = baseline(da, window=(0.0, 1.0), mode="zscore")
+        np.testing.assert_allclose(out.values, np.zeros_like(out.values))
+
     def test_normalize_zscore(self) -> None:
         """Z-score normalize across trials."""
         da = xr.DataArray(

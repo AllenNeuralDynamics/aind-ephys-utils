@@ -53,7 +53,9 @@ def baseline(
         out = da / mean
     elif mode == "zscore":
         std = baseline_da.std(dim=dim, keep_attrs=True)
-        out = (da - mean) / std
+        denom = std.where(std != 0)
+        out = (da - mean) / denom
+        out = out.where(std != 0, 0.0)
     else:
         raise ValueError(f"Unknown baseline mode {mode!r}.")
 
