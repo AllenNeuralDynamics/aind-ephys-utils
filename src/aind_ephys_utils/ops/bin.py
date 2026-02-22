@@ -41,6 +41,22 @@ def bin(  # noqa: C901
         Output type, typically "rate" or "count".
     time_unit:
         Unit for time values, recorded in attrs.
+    dims:
+        Optional dimension names used when ``data`` is a dense NumPy array.
+        This is ignored for ragged list inputs.
+    coords:
+        Optional coordinate mapping used when constructing a DataArray from
+        dense NumPy input.
+    return_type:
+        Output type policy: ``"auto"``, ``"xarray"``, or ``"numpy"``.
+        ``"auto"`` mirrors the input style (xarray in/xarray out,
+        list/NumPy ragged in/list or NumPy out).
+
+    Returns
+    -------
+    xr.DataArray or object
+        Binned dense output. For ``return_type="numpy"``, returns a NumPy
+        array with the same dense shape as the xarray result values.
     """
     da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
 

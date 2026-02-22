@@ -34,6 +34,19 @@ def normalize(
         Dimension(s) to normalize across.
     method:
         Normalization method (e.g. "zscore", "minmax", "robust").
+    dims:
+        Optional dimension names used when ``data`` is a dense NumPy array.
+    coords:
+        Optional coordinate mapping used when constructing a DataArray from
+        dense NumPy input.
+    return_type:
+        Output type policy: ``"auto"``, ``"xarray"``, or ``"numpy"``.
+        ``"auto"`` mirrors the input style.
+
+    Returns
+    -------
+    xr.DataArray or object
+        Normalized data in the selected output representation.
     """
     da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
 

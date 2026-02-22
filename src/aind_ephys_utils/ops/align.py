@@ -234,11 +234,35 @@ def align(
     """
     Align data to an event and extract a time window around it.
 
-    - Continuous/binned: returns da with time shifted so event is at 0,
-      sliced to window.
-    - Ragged spikes: expects session-time ragged spikes with trial size 1;
-      returns trialized spikes by subtracting each event time and filtering
-      to window.
+    Parameters
+    ----------
+    data:
+        Input data. Supports ``xarray.DataArray`` (dense or ragged spikes),
+        dense NumPy arrays, and ragged spike lists.
+    events:
+        Event times used for alignment. Can be an ``xarray.DataArray`` with an
+        event coordinate, or array-like event times.
+    window:
+        Alignment window ``(tmin, tmax)`` relative to each event.
+    to:
+        Event label to align to when ``events`` is xarray-backed.
+    dims:
+        Optional dimension names used when ``data`` is a dense NumPy array.
+        Required for dense NumPy input.
+    coords:
+        Optional coordinate mapping used when converting dense NumPy input to
+        ``xarray.DataArray``.
+    return_type:
+        Output type policy: ``"auto"``, ``"xarray"``, or ``"numpy"``.
+        ``"auto"`` returns xarray for xarray input and NumPy/list output for
+        NumPy or ragged-list input.
+
+    Returns
+    -------
+    xr.DataArray or object
+        Aligned output restricted to ``window``.
+        Continuous/binned input returns dense aligned data with shifted time.
+        Ragged session spikes return trialized ragged spikes.
 
     Notes
     -----
