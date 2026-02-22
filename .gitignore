@@ -139,9 +139,12 @@ dmypy.json
 # MacOs
 **/.DS_Store
 
+# VS Code
 .vscode
-
 code/.vscode
+
+# Notebooks for testing
+notebooks
 
 # CodeOcean
 environment 
