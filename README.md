@@ -6,7 +6,7 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
-![Logo](docs/source/_static/aind-ephys-utils.png)
+<img src="docs/source/_static/aind-ephys-utils.png" alt="Logo" width="450">
 
 ## Installation
 
@@ -17,24 +17,72 @@ pip install aind-ephys-utils
 
 ## Usage
 
-All analysis happens on [Xarray](https://docs.xarray.dev/en/stable/) `DataArray` objects with labeled dimensions and coordinates, via the `ephys` accessor:
-- `da.ephys.align(...)`
+There are three ways to use this library:
+
+#### 1. via `ephys` accessor (recommended):
+
+First, create an [Xarray](https://docs.xarray.dev/en/stable/) `DataArray` with labeled dimensions and coordinates from a Pandas or Polars `DataFrame` containing spike times or trials:
+
+```python
+from aind_ephys_utils import from_dataframe
+
+da = from_dataframe(spikes_df)
+trials = from_dataframe(trials_df)
+# or
+da = from_dataframe(spikes_df, trials_df, window=(-1,1))
+```
+
+Then, all analysis happens on `DataArrays` via the `ephys` accessor:
+- `da.ephys.bin(...)`
 - `da.ephys.reduce(...)`
 - `da.ephys.psth(...)`
 - `da.ephys.plot.raster(...)`
 
 This allows functions to be run in sequence and combined with built-in Xarray functions, e.g.:
 
-```
+```python
 da.ephys.align(...).sel(unit=1).mean('trial').ephys.smooth(...)
 ```
+
+#### 2. via Xarray `pipe` method:
+
+Alternatively, you can import individual functions and run them sequentially on appropriately formatted `DataArrays`:
+
+```python
+from aind_ephys_utils.ops import smooth, baseline, psth
+
+result = (
+    da
+    .pipe(smooth, method='gaussian', sigma=0.03)
+    .pipe(baseline, window=(-0.5, 0.0))
+    .pipe(psth, group_by="condition")
+)
+```
+
+#### 3. with Numpy arrays:
+
+Many functions are also compatible with Numpy inputs:
+
+```python
+from aind_ephys_utils.ops import align, bin
+
+aligned_spikes = align(
+    spikes,         # list of arrays of spike times
+    events=T,       # list or ndarray of event times
+    window=(-1, 1), # window around each event
+)
+binned_spikes = bin(aligned_spikes,
+                    dt=0.01)
+```
+
+**CAUTION**: Since Numpy arrays lack intrinsic labels, extra care must be taken to make sure input data is formatted correctly.
 
 ### NWB example
 
 Analysis usually starts from two `DataFrames` loaded from an NWB file, one for spikes and one for trials:
 
 ```python
-from aind_ephys_utils.adapters import from_dataframe
+from aind_ephys_utils import from_dataframe
 from pynwb import NWBHDF5IO
 
 # read the file
@@ -90,6 +138,7 @@ The `reduce` operation currently supports seven commonly used dimensionality red
 - `restrict`: Only keep data within a specified time window
 - `smooth`: Smooth firing rates over time
 
+These operations also support Numpy inputs/outputs.
 
 ## Contributing
 
