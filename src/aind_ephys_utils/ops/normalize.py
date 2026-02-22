@@ -2,31 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import xarray as xr
 
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def normalize(
-    da: xr.DataArray,
+    data: DataInput,
     *,
     dim: Union[str, Tuple[str, ...]],
     method: str = "zscore",
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
     Normalize data across one or more dimensions.
 
     Parameters
     ----------
-    da:
-        Input DataArray.
+    data:
+        Input DataArray or NumPy-like data.
     dim:
         Dimension(s) to normalize across.
     method:
         Normalization method (e.g. "zscore", "minmax", "robust").
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     if isinstance(dim, str):
         dims = (dim,)
     else:
@@ -63,4 +73,6 @@ def normalize(
 
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )

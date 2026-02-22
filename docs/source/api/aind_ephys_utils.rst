@@ -21,6 +21,7 @@ Submodules
    :maxdepth: 4
 
    aind_ephys_utils.align
+   aind_ephys_utils.config
 
 Module contents
 ---------------

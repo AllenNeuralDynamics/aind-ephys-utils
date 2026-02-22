@@ -116,9 +116,10 @@ class EphysDataArrayAccessor:
 
     def align(
         self,
-        events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
-        to: str,
+        events: Union[xr.DataArray, Sequence[float], np.ndarray],
+        *,
         window: Tuple[float, float],
+        to: Optional[str] = None,
     ) -> xr.DataArray:
         """Align to an event and extract a time window.
 
@@ -127,7 +128,7 @@ class EphysDataArrayAccessor:
         events:
             Events object describing event times.
         to:
-            Event label to align to.
+            Event label to align to. Optional for array-like event times.
         window:
             (tmin, tmax) window around the event time.
 

@@ -8,14 +8,19 @@ The public entry point is `align`, which is used by the `.ephys.align` accessor.
 
 from __future__ import annotations
 
-from typing import Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import xarray as xr
 
 from ..standards.conventions import C
 from ..standards.validate import infer_kind, validate
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 class EphysAlignError(ValueError):
@@ -25,18 +30,17 @@ class EphysAlignError(ValueError):
 
 
 def _normalize_events(
-    events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
+    events: Union[xr.DataArray, Sequence[float], np.ndarray],
     *,
     to: str = "event",
-) -> xr.Dataset:
+) -> xr.DataArray:
     """
     Accept:
-      - Dataset with var "t" dims (trial, event)
       - DataArray of event times dims (trial, event)
       - DataArray of events with dims (trial, event, bound)
       - 1D array-like of event times (trial,)
       - scalar event time
-    Return a Dataset with events["t"] always present.
+    Return a DataArray with dims (trial, event).
     """
 
     if isinstance(events, xr.DataArray):
@@ -47,12 +51,6 @@ def _normalize_events(
                     "(trial, event, bound) representation."
                 )
             events = events.sel(bound="start")
-        return xr.Dataset({C.event_time_var: events})
-    if isinstance(events, xr.Dataset):
-        if C.event_time_var not in events:
-            raise EphysAlignError(
-                f"events must contain variable {C.event_time_var!r}."
-            )
         return events
     if np.isscalar(events):
         times = np.asarray([events], dtype=float)
@@ -61,8 +59,7 @@ def _normalize_events(
             times = np.asarray(events, dtype=float)
         except Exception as e:
             raise TypeError(
-                "events must be an xarray Dataset/DataArray or array-like "
-                "event times."
+                "events must be an xarray DataArray or array-like event times."
             ) from e
 
     if times.ndim != 1:
@@ -76,17 +73,16 @@ def _normalize_events(
         dims=(C.trial, C.event),
         coords={C.trial: np.arange(times.shape[0]), C.event: [to]},
     )
-    return xr.Dataset({C.event_time_var: event_times})
+    return event_times
 
 
-def _get_event_times(events: xr.Dataset, to: str) -> xr.DataArray:
+def _get_event_times(events: xr.DataArray, to: str) -> xr.DataArray:
     """Select per-trial event times for a specific event label.
 
     Parameters
     ----------
     events:
-        Events dataset containing `events[C.event_time_var]` with an `event`
-        dimension.
+        Event-times DataArray with an `event` dimension.
     to:
         Event label to select.
 
@@ -95,18 +91,16 @@ def _get_event_times(events: xr.Dataset, to: str) -> xr.DataArray:
     xr.DataArray
         Per-trial event times with dims (trial,).
     """
-    t = events[C.event_time_var]
-    if C.event not in t.dims:
+    if C.event not in events.dims:
         raise EphysAlignError(
-            f"events['{C.event_time_var}'] must have a '{C.event}' dimension. "
-            f"Got dims {t.dims}."
+            f"events must have a '{C.event}' dimension. Got dims {events.dims}."
         )
     try:
-        return t.sel({C.event: to})
+        return events.sel({C.event: to})
     except KeyError as e:
         raise EphysAlignError(
             f"Could not find event label {to!r} in "
-            f"events['{C.event_time_var}']."
+            "event coordinates."
         ) from e
 
 
@@ -229,24 +223,41 @@ def _align_ragged(
 
 
 def align(
-    da: xr.DataArray,
+    data: DataInput,
     *,
-    events: Union[xr.Dataset, xr.DataArray, Sequence[float], np.ndarray],
-    to: str,
+    events: Union[xr.DataArray, Sequence[float], np.ndarray],
     window: Tuple[float, float],
-) -> xr.DataArray:
+    to: Optional[str] = None,
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
-    Align a DataArray to an event and extract a time window around it.
+    Align data to an event and extract a time window around it.
 
     - Continuous/binned: returns da with time shifted so event is at 0,
       sliced to window.
     - Ragged spikes: expects session-time ragged spikes with trial size 1;
       returns trialized spikes by subtracting each event time and filtering
       to window.
+
+    Notes
+    -----
+    ``to`` is optional for array-like/ndarray ``events`` inputs. For xarray
+    ``events`` objects, ``to`` is required to select an event label.
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
+    if to is None and isinstance(events, xr.DataArray):
+        raise EphysAlignError(
+            "to is required when events is an xarray DataArray. "
+            "For array-like event times, to may be omitted."
+        )
+    to_use = to if to is not None else "__event__"
+
     validate(da)
-    events = _normalize_events(events, to=to)
-    t0 = _get_event_times(events, to=to)
+    events = _normalize_events(events, to=to_use)
+    t0 = _get_event_times(events, to=to_use)
 
     tmin, tmax = window
     if tmin >= tmax:
@@ -273,4 +284,7 @@ def align(
     else:
         raise EphysAlignError(f"Unsupported kind {kind!r} for align.")
 
-    return _finalize_output(da, out, window)
+    out = _finalize_output(da, out, window)
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )

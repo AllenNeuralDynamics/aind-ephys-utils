@@ -2,29 +2,37 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import xarray as xr
 
 from ..standards.conventions import C
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def bin(  # noqa: C901
-    da: xr.DataArray,
+    data: DataInput,
     dt: float,
     window: Optional[Tuple[float, float]] = None,
     output: str = "rate",
     time_unit: str = "s",
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
     Bin ragged spikes into a dense representation.
 
     Parameters
     ----------
-    da:
-        Ragged spike DataArray (typically dims: trial, unit).
+    data:
+        Ragged spike DataArray/list or object NumPy array.
     dt:
         Bin width in seconds.
     window:
@@ -34,6 +42,8 @@ def bin(  # noqa: C901
     time_unit:
         Unit for time values, recorded in attrs.
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     if dt <= 0:
         raise ValueError("dt must be a positive number of seconds.")
 
@@ -122,7 +132,9 @@ def bin(  # noqa: C901
     out.attrs[C.attr_time_unit] = time_unit
     if window is not None:
         out.attrs[C.attr_valid_intervals] = [window]
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )
 
 
 def _infer_tlim(da: xr.DataArray) -> Tuple[float, float]:

@@ -2,31 +2,39 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from ..standards.conventions import C
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def psth(
-    da: xr.DataArray,
+    data: DataInput,
     *,
     dim: str = C.trial,
     method: str = "mean",
     group_by: Optional[Union[str, Sequence[str]]] = None,
     keep_trials: bool = False,
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
     Reduce across trials to compute a PSTH-style summary.
 
     Parameters
     ----------
-    da:
-        Input DataArray (binned or continuous).
+    data:
+        Input DataArray or NumPy-like data (binned or continuous).
     dim:
         Dimension to reduce across.
     method:
@@ -36,8 +44,12 @@ def psth(
     keep_trials:
         If True, keep per-trial data along with the summary.
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     if dim not in da.dims:
-        return da.copy()
+        return from_dataarray_output(
+            da.copy(), input_kind=input_kind, return_type=return_type
+        )
 
     if not isinstance(method, str):
         raise ValueError("method must be a non-empty string.")
@@ -57,7 +69,9 @@ def psth(
     if not keep_trials:
         summary.attrs = dict(da.attrs)
         summary = preserve_coords(da, summary)
-        return summary
+        return from_dataarray_output(
+            summary, input_kind=input_kind, return_type=return_type
+        )
 
     summary_exp = summary.expand_dims({dim: ["__summary__"]})
     if dim in da.coords:
@@ -66,7 +80,9 @@ def psth(
     out = xr.concat([da, summary_exp], dim=dim)
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )
 
 
 def _grouped_reduce(

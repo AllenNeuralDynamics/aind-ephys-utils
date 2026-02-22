@@ -2,28 +2,36 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import xarray as xr
 
 from ..standards.conventions import C
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def baseline(
-    da: xr.DataArray,
+    data: DataInput,
     *,
     window: Tuple[float, float],
     dim: str = C.time,
     mode: str = "subtract",
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
     Apply baseline correction over a window.
 
     Parameters
     ----------
-    da:
-        Input DataArray.
+    data:
+        Input DataArray or NumPy-like data.
     window:
         (tmin, tmax) baseline window.
     dim:
@@ -31,6 +39,8 @@ def baseline(
     mode:
         Baseline mode ("subtract", "divide", "zscore").
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     if dim not in da.dims:
         raise ValueError(f"dim {dim!r} not found in DataArray dims.")
 
@@ -61,4 +71,6 @@ def baseline(
 
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )

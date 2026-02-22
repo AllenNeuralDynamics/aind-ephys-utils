@@ -2,31 +2,39 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional, Sequence, Union
 
 import numpy as np
 import xarray as xr
 
 from ..standards.conventions import C
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def smooth(
-    da: xr.DataArray,
+    data: DataInput,
     *,
     dim: str = C.time,
     method: str = "boxcar",
     sigma: Optional[float] = None,
     window: Optional[float] = None,
     boundary: str = "reflect",
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
     Smooth a signal along a dimension.
 
     Parameters
     ----------
-    da:
-        Input DataArray.
+    data:
+        Input DataArray or NumPy-like data.
     dim:
         Dimension to smooth (defaults to time).
     method:
@@ -38,6 +46,8 @@ def smooth(
     boundary:
         Boundary handling mode.
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     if dim not in da.dims:
         raise ValueError(f"dim {dim!r} not found in DataArray dims.")
     if dim not in da.coords:
@@ -69,7 +79,9 @@ def smooth(
     )
     out.attrs = dict(da.attrs)
     out = preserve_coords(da, out)
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )
 
 
 def _infer_dt(values: np.ndarray) -> float:

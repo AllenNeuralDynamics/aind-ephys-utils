@@ -21,6 +21,8 @@ from ._internal.dpca import dPCA
 from ._internal.gpfa import gpfa as _gpfa
 from ._internal.utils import preserve_coords
 
+LabelSpec = Union[str, xr.DataArray, Sequence[Union[str, xr.DataArray]]]
+
 
 def reduce(  # noqa: C901
     da: xr.DataArray,
@@ -40,7 +42,7 @@ def reduce(  # noqa: C901
     trial_dim: str = C.trial,
     time_dim: str = C.time,
     trial_average: bool = True,
-    labels: Optional[Union[Sequence[str], str]] = None,
+    labels: Optional[LabelSpec] = None,
     targets: Optional[xr.DataArray] = None,
     rank: Optional[int] = None,
     regularization: Optional[float] = None,
@@ -274,15 +276,25 @@ def _reduce_dpca(  # noqa: C901
     dim: Optional[str],
     trial_dim: str,
     time_dim: str,
-    labels: Optional[Union[Sequence[str], str]],
+    labels: Optional[LabelSpec],
     trial_average: bool,
 ) -> xr.Dataset:
     """dPCA implementation using the original solver."""
     if labels is None:
         raise ValueError("labels is required for method='dpca'.")
+    if isinstance(labels, xr.DataArray):
+        raise ValueError(
+            "method='dpca' requires labels to be coordinate name(s), "
+            "not an xarray.DataArray."
+        )
     if isinstance(labels, str):
         condition_dims = (labels,)
     else:
+        if any(isinstance(x, xr.DataArray) for x in labels):
+            raise ValueError(
+                "method='dpca' requires labels to be coordinate name(s), "
+                "not xarray.DataArray objects."
+            )
         condition_dims = tuple(labels)
     if len(condition_dims) == 0:
         raise ValueError("labels is required for method='dpca'.")
@@ -399,7 +411,7 @@ def _reduce_supervised(  # noqa: C901
     orthogonalize_across: str,
     trial_dim: str,
     time_dim: str,
-    labels: Optional[Union[Sequence[str], str]],
+    labels: Optional[LabelSpec],
     targets: Optional[xr.DataArray],
     rank: Optional[int],
     regularization: Optional[float],
@@ -446,17 +458,7 @@ def _reduce_supervised(  # noqa: C901
     if labels is None:
         label_sets = []
     else:
-        if isinstance(labels, str):
-            label_names = [labels]
-        else:
-            label_names = list(labels)
-        label_sets = []
-        for name in label_names:
-            if name not in da.coords:
-                raise ValueError(
-                    f"label coord {name!r} not found in DataArray coords."
-                )
-            label_sets.append((name, da.coords[name]))
+        label_sets = _normalize_supervised_labels(da, labels)
     mode_entries: list[Dict[str, object]] = []
 
     if method in ("coding_direction", "logistic", "lda"):
@@ -622,6 +624,33 @@ def _reduce_supervised(  # noqa: C901
         )
 
     raise NotImplementedError(f"Unhandled supervised method {method!r}.")
+
+
+def _normalize_supervised_labels(
+    da: xr.DataArray,
+    labels: Union[
+        str, xr.DataArray, Sequence[Union[str, xr.DataArray]]
+    ],
+) -> list[Tuple[str, xr.DataArray]]:
+    """Normalize supervised labels into a list of named DataArrays."""
+    if isinstance(labels, str):
+        names = [labels]
+    elif isinstance(labels, xr.DataArray):
+        name = labels.name if labels.name is not None else "__labels__"
+        return [(str(name), labels)]
+    else:
+        names = list(labels)
+
+    out: list[Tuple[str, xr.DataArray]] = []
+    for item in names:
+        if isinstance(item, xr.DataArray):
+            name = item.name if item.name is not None else "__labels__"
+            out.append((str(name), item))
+            continue
+        if item not in da.coords:
+            raise ValueError(f"label coord {item!r} not found in DataArray coords.")
+        out.append((str(item), da.coords[item]))
+    return out
 
 
 def _condition_mean(

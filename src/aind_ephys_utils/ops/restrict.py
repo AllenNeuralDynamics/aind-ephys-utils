@@ -2,28 +2,36 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import xarray as xr
 
 from ..standards.conventions import C
-from ._internal.utils import preserve_coords
+from ._internal.utils import (
+    DataInput,
+    from_dataarray_output,
+    preserve_coords,
+    to_dataarray_input,
+)
 
 
 def restrict(
-    da: xr.DataArray,
+    data: DataInput,
     *,
     window: Tuple[float, float],
     dim: str = C.time,
-) -> xr.DataArray:
+    dims: Optional[Sequence[str]] = None,
+    coords: Optional[Dict[str, object]] = None,
+    return_type: str = "auto",
+) -> Union[xr.DataArray, object]:
     """
-    Restrict a DataArray to a time window.
+    Restrict input data to a time window.
 
     Parameters
     ----------
-    da:
-        Input DataArray, either binned/continuous or ragged spikes.
+    data:
+        Input DataArray/NumPy array or ragged spikes.
     window:
         (tmin, tmax) interval to keep.
     dim:
@@ -34,6 +42,8 @@ def restrict(
     xr.DataArray
         Cropped DataArray with data restricted to the window.
     """
+    da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
+
     tmin, tmax = window
     if tmin > tmax:
         raise ValueError("window must be (tmin, tmax) with tmin <= tmax.")
@@ -42,7 +52,9 @@ def restrict(
         out.attrs = dict(da.attrs)
         out.attrs[C.attr_valid_intervals] = [(float(tmin), float(tmax))]
         out = preserve_coords(da, out)
-        return out
+        return from_dataarray_output(
+            out, input_kind=input_kind, return_type=return_type
+        )
     if da.dtype != object:
         raise ValueError(
             f"restrict expects a '{dim}' dimension or ragged spikes."
@@ -75,4 +87,6 @@ def restrict(
         attrs=dict(da.attrs),
     )
     out.attrs[C.attr_valid_intervals] = [(float(tmin), float(tmax))]
-    return out
+    return from_dataarray_output(
+        out, input_kind=input_kind, return_type=return_type
+    )

@@ -379,6 +379,94 @@ class OpsTest(unittest.TestCase):
         np.testing.assert_allclose(out.values[0, 0], [0.1, 0.3])
         np.testing.assert_allclose(out.values[0, 1], [0.2])
 
+    def test_normalize_numpy_input(self) -> None:
+        """normalize should accept NumPy input and return NumPy by default."""
+        arr = np.array([[0.0, 2.0], [2.0, 4.0]], dtype=float)
+        out = normalize(arr, dim="trial", dims=("trial", "time"))
+        self.assertIsInstance(out, np.ndarray)
+        np.testing.assert_allclose(out.mean(axis=0), 0.0, atol=1e-7)
+
+    def test_smooth_numpy_input(self) -> None:
+        """smooth should accept dense NumPy input with explicit dims/coords."""
+        arr = np.array([0.0, 0.0, 1.0, 0.0, 0.0], dtype=float)
+        out = smooth(
+            arr,
+            method="gaussian",
+            sigma=1.0,
+            dims=("time",),
+            coords={"time": np.arange(5, dtype=float)},
+        )
+        self.assertIsInstance(out, np.ndarray)
+        self.assertEqual(out.shape, arr.shape)
+
+    def test_baseline_numpy_input(self) -> None:
+        """baseline should accept NumPy input and return NumPy by default."""
+        arr = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=float)
+        out = baseline(
+            arr,
+            window=(0.0, 1.0),
+            mode="subtract",
+            dims=("trial", "time"),
+            coords={"time": np.array([0.0, 1.0, 2.0, 3.0], dtype=float)},
+        )
+        self.assertIsInstance(out, np.ndarray)
+        np.testing.assert_allclose(out[0, :2], [-0.5, 0.5])
+
+    def test_restrict_numpy_input(self) -> None:
+        """restrict should accept NumPy input with a time dimension."""
+        arr = np.arange(10, dtype=float)
+        out = restrict(
+            arr,
+            window=(2.0, 5.0),
+            dims=("time",),
+            coords={"time": np.arange(10, dtype=float)},
+        )
+        self.assertIsInstance(out, np.ndarray)
+        np.testing.assert_array_equal(out, np.array([2.0, 3.0, 4.0, 5.0]))
+
+    def test_psth_numpy_input(self) -> None:
+        """psth should accept NumPy input and reduce over a named dim."""
+        arr = np.array([[1.0, 3.0], [3.0, 5.0]], dtype=float)
+        out = psth(arr, dim="trial", method="mean", dims=("trial", "time"))
+        self.assertIsInstance(out, np.ndarray)
+        np.testing.assert_allclose(out, np.array([2.0, 4.0]))
+
+    def test_bin_ragged_session_list_input(self) -> None:
+        """bin should accept session ragged list input."""
+        spikes = [np.array([0.05, 0.15], dtype=float), np.array([0.02], dtype=float)]
+        out = bin(spikes, dt=0.1, window=(0.0, 0.2), output="count")
+        self.assertIsInstance(out, np.ndarray)
+        self.assertEqual(out.shape, (1, 2, 2))
+        np.testing.assert_array_equal(out[0, 0], [1, 1])
+        np.testing.assert_array_equal(out[0, 1], [1, 0])
+
+    def test_align_ragged_session_list_input(self) -> None:
+        """align should accept session ragged list and return trial ragged list."""
+        spikes = [np.array([0.1, 0.3, 0.5, 0.7], dtype=float)]
+        out = align(
+            spikes,
+            events=np.array([0.4, 0.6]),
+            to="stim",
+            window=(-0.2, 0.2),
+        )
+        self.assertIsInstance(out, list)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(len(out[0]), 1)
+        np.testing.assert_allclose(out[0][0], np.array([-0.1, 0.1]))
+        np.testing.assert_allclose(out[1][0], np.array([-0.1, 0.1]))
+
+    def test_numpy_input_return_type_xarray(self) -> None:
+        """NumPy input should support explicit xarray output."""
+        arr = np.array([[1.0, 3.0], [3.0, 5.0]], dtype=float)
+        out = psth(
+            arr,
+            dim="trial",
+            method="mean",
+            dims=("trial", "time"),
+            return_type="xarray",
+        )
+        self.assertIsInstance(out, xr.DataArray)
+
 
 class ReduceMethodsTest(unittest.TestCase):
     """Coverage for all dimensionality-reduction methods."""
@@ -606,6 +694,21 @@ class ReduceMethodsTest(unittest.TestCase):
         self.assertEqual(out["weights"].dims, ("component", "unit"))
         self.assertEqual(out["projections"].sizes["component"], 1)
 
+    def test_reduce_logistic_labels_dataarray(self) -> None:
+        """Logistic reduction should accept labels passed as DataArray."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="logistic",
+            dim="unit",
+            labels=da.coords["choice"],
+            stack=("trial", "time"),
+        )
+        self.assertEqual(
+            out["projections"].dims, ("component", "trial", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("component", "unit"))
+
     def test_reduce_lda(self) -> None:
         """LDA reduction returns one component for binary labels."""
         da = self._make_reduce_data()
@@ -659,29 +762,28 @@ class ReduceMethodsTest(unittest.TestCase):
 class NormalizeEventsTest(unittest.TestCase):
     """Tests for _normalize_events helper."""
 
-    def test_dataset_with_t_var(self) -> None:
-        """Dataset with 't' variable passes through."""
+    def test_dataset_input_rejected(self) -> None:
+        """Dataset input is no longer supported for _normalize_events."""
         events = xr.Dataset(
             {"t": (("trial", "event"), [[1.0, 2.0]])},
             coords={"trial": [0], "event": ["stim", "reward"]},
         )
-        result = _normalize_events(events)
-        self.assertIn("t", result)
-        np.testing.assert_array_equal(result["t"].values, [[1.0, 2.0]])
+        with self.assertRaises(TypeError):
+            _normalize_events(events)  # type: ignore[arg-type]
 
     def test_dataarray_simple(self) -> None:
-        """DataArray of event times is wrapped in Dataset."""
+        """DataArray of event times passes through unchanged."""
         da = xr.DataArray(
             [[1.0, 2.0]],
             dims=("trial", "event"),
             coords={"trial": [0], "event": ["stim", "reward"]},
         )
         result = _normalize_events(da)
-        self.assertIsInstance(result, xr.Dataset)
-        self.assertIn("t", result)
+        self.assertIsInstance(result, xr.DataArray)
+        np.testing.assert_array_equal(result.values, [[1.0, 2.0]])
 
     def test_dataarray_with_bound_dim(self) -> None:
-        """DataArray with (trial, event, bound) selects 'start'."""
+        """DataArray with (trial, event, bound) selects start times."""
         da = xr.DataArray(
             [[[1.0, 1.5], [2.0, 2.5]]],
             dims=("trial", "event", "bound"),
@@ -692,9 +794,7 @@ class NormalizeEventsTest(unittest.TestCase):
             },
         )
         result = _normalize_events(da)
-        self.assertIn("t", result)
-        # Should select bound="start"
-        np.testing.assert_array_equal(result["t"].values, [[1.0, 2.0]])
+        np.testing.assert_array_equal(result.values, [[1.0, 2.0]])
 
     def test_dataarray_with_bound_missing_start(self) -> None:
         """DataArray with bound dim but no 'start' raises error."""
@@ -710,24 +810,15 @@ class NormalizeEventsTest(unittest.TestCase):
         with self.assertRaises(EphysAlignError):
             _normalize_events(da)
 
-    def test_dataset_missing_t_var(self) -> None:
-        """Dataset without 't' variable raises error."""
-        events = xr.Dataset(
-            {"times": (("trial", "event"), [[1.0, 2.0]])},
-            coords={"trial": [0], "event": ["stim", "reward"]},
-        )
-        with self.assertRaises(EphysAlignError):
-            _normalize_events(events)
-
     def test_invalid_type(self) -> None:
         """Non-xarray input raises TypeError."""
         with self.assertRaises(TypeError):
             _normalize_events({"t": [1.0, 2.0]})
 
     def test_array_like_event_times(self) -> None:
-        """1D array-like event times are coerced to trial/event dataset."""
+        """1D array-like event times are coerced to trial/event DataArray."""
         result = _normalize_events([1.0, 2.0], to="stim")
-        np.testing.assert_array_equal(result["t"].values, [[1.0], [2.0]])
+        np.testing.assert_array_equal(result.values, [[1.0], [2.0]])
         np.testing.assert_array_equal(result["event"].values, ["stim"])
 
     def test_array_like_requires_1d(self) -> None:
@@ -741,8 +832,9 @@ class GetEventTimesTest(unittest.TestCase):
 
     def test_select_event(self) -> None:
         """Select specific event label."""
-        events = xr.Dataset(
-            {"t": (("trial", "event"), [[1.0, 2.0], [1.5, 2.5]])},
+        events = xr.DataArray(
+            [[1.0, 2.0], [1.5, 2.5]],
+            dims=("trial", "event"),
             coords={"trial": [0, 1], "event": ["stim", "reward"]},
         )
         result = _get_event_times(events, to="stim")
@@ -751,8 +843,9 @@ class GetEventTimesTest(unittest.TestCase):
 
     def test_missing_event_dim(self) -> None:
         """Missing 'event' dimension raises error."""
-        events = xr.Dataset(
-            {"t": (("trial",), [1.0, 2.0])},
+        events = xr.DataArray(
+            [1.0, 2.0],
+            dims=("trial",),
             coords={"trial": [0, 1]},
         )
         with self.assertRaises(EphysAlignError):
@@ -760,8 +853,9 @@ class GetEventTimesTest(unittest.TestCase):
 
     def test_missing_event_label(self) -> None:
         """Missing event label raises error."""
-        events = xr.Dataset(
-            {"t": (("trial", "event"), [[1.0, 2.0]])},
+        events = xr.DataArray(
+            [[1.0, 2.0]],
+            dims=("trial", "event"),
             coords={"trial": [0], "event": ["stim", "reward"]},
         )
         with self.assertRaises(EphysAlignError):
@@ -782,7 +876,7 @@ class AlignContinuousTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.0], [0.0]])},
             coords={"trial": [0, 1], "event": ["stim"]},
         )
-        result = align(da, events=events, to="stim", window=(-0.3, 0.3))
+        result = align(da, events=events["t"], to="stim", window=(-0.3, 0.3))
         self.assertIn("trial", result.dims)
         self.assertIn("time", result.dims)
         # Window should be respected
@@ -801,7 +895,7 @@ class AlignContinuousTest(unittest.TestCase):
             coords={"trial": [0], "event": ["stim"]},
         )
         with self.assertRaises(EphysValidationError):
-            align(da, events=events, to="stim", window=(-0.2, 0.2))
+            align(da, events=events["t"], to="stim", window=(-0.2, 0.2))
 
     def test_continuous_no_trial_array_like_events(self) -> None:
         """No-trial continuous alignment accepts array-like event times."""
@@ -814,6 +908,32 @@ class AlignContinuousTest(unittest.TestCase):
         np.testing.assert_allclose(
             result["time"].values, [-0.2, -0.1, 0.0, 0.1]
         )
+
+    def test_continuous_no_trial_array_like_events_without_to(self) -> None:
+        """Array-like event times should not require the to argument."""
+        da = xr.DataArray(
+            np.arange(10, dtype=float),
+            dims=("time",),
+            coords={"time": np.linspace(0.0, 0.9, 10)},
+        )
+        result = align(da, events=[0.5], window=(-0.2, 0.2))
+        np.testing.assert_allclose(
+            result["time"].values, [-0.2, -0.1, 0.0, 0.1]
+        )
+
+    def test_xarray_events_require_to(self) -> None:
+        """xarray events should still require an explicit label via to."""
+        da = xr.DataArray(
+            np.arange(10, dtype=float),
+            dims=("time",),
+            coords={"time": np.linspace(0.0, 0.9, 10)},
+        )
+        events = xr.Dataset(
+            {"t": (("trial", "event"), [[0.5]])},
+            coords={"trial": [0], "event": ["stim"]},
+        )
+        with self.assertRaisesRegex(EphysAlignError, "to is required"):
+            _ = align(da, events=events["t"], window=(-0.2, 0.2))
 
 
 class AlignBinnedTest(unittest.TestCase):
@@ -834,7 +954,7 @@ class AlignBinnedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.0], [0.0]])},
             coords={"trial": [0, 1], "event": ["stim"]},
         )
-        result = align(da, events=events, to="stim", window=(-0.3, 0.3))
+        result = align(da, events=events["t"], to="stim", window=(-0.3, 0.3))
         self.assertIn("trial", result.dims)
         self.assertIn("unit", result.dims)
         self.assertIn("time", result.dims)
@@ -857,7 +977,7 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.4]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events, to="stim", window=(-0.2, 0.2))
+        result = align(spikes, events=events["t"], to="stim", window=(-0.2, 0.2))
         # Spikes at 0.3, 0.5 are within window (0.2-0.6 absolute)
         # Aligned: 0.3-0.4=-0.1, 0.5-0.4=0.1
         aligned_unit0 = result.values[0, 0]
@@ -879,7 +999,7 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.5]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events, to="stim", window=(-0.1, 0.1))
+        result = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
         self.assertEqual(len(result.values[0, 0]), 0)
 
     def test_ragged_spikes_missing_trial_dim(self) -> None:
@@ -897,7 +1017,7 @@ class AlignRaggedTest(unittest.TestCase):
             coords={"trial": [0], "event": ["stim"]},
         )
         with self.assertRaises(EphysValidationError):
-            align(spikes, events=events, to="stim", window=(-0.1, 0.1))
+            align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
 
     def test_ragged_spikes_none_entry(self) -> None:
         """Ragged spikes with None entry returns empty array."""
@@ -913,7 +1033,7 @@ class AlignRaggedTest(unittest.TestCase):
             {"t": (("trial", "event"), [[0.5]])},
             coords={"trial": [0], "event": ["stim"]},
         )
-        result = align(spikes, events=events, to="stim", window=(-0.1, 0.1))
+        result = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
         self.assertEqual(len(result.values[0, 0]), 0)
         self.assertEqual(len(result.values[0, 1]), 1)
 
@@ -946,7 +1066,7 @@ class AlignRaggedTest(unittest.TestCase):
             coords={"trial": [0, 1], "event": ["stim"]},
         )
         with self.assertRaisesRegex(EphysAlignError, "single 'trial' entry"):
-            _ = align(spikes, events=events, to="stim", window=(-0.1, 0.1))
+            _ = align(spikes, events=events["t"], to="stim", window=(-0.1, 0.1))
 
 
 class AlignWindowValidationTest(unittest.TestCase):
@@ -964,7 +1084,7 @@ class AlignWindowValidationTest(unittest.TestCase):
             coords={"trial": [0], "event": ["stim"]},
         )
         with self.assertRaises(EphysAlignError):
-            align(da, events=events, to="stim", window=(0.2, 0.2))
+            align(da, events=events["t"], to="stim", window=(0.2, 0.2))
 
     def test_invalid_window_min_greater_than_max(self) -> None:
         """Window with min > max raises error."""
@@ -978,4 +1098,4 @@ class AlignWindowValidationTest(unittest.TestCase):
             coords={"trial": [0], "event": ["stim"]},
         )
         with self.assertRaises(EphysAlignError):
-            align(da, events=events, to="stim", window=(0.3, 0.1))
+            align(da, events=events["t"], to="stim", window=(0.3, 0.1))
