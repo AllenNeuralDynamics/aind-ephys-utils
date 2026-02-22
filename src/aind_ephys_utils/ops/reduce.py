@@ -331,7 +331,10 @@ def _reduce_dpca(  # noqa: C901
     da_dpca = da_cond.transpose(dim, *factor_dims)
     X = np.asarray(da_dpca.data)
     if np.isnan(X).any():
-        X = np.nan_to_num(X, nan=0.0)
+        raise ValueError(
+            "dPCA input contains NaN values. "
+            "Ensure condition combinations are complete and data are finite."
+        )
 
     dpca = dPCA(labels=len(factor_dims), n_components=n_components)
     dpca.fit(X)
@@ -637,7 +640,25 @@ def _condition_mean(
     )
     da2 = da.assign_coords(_cond=(trial_dim, cond_index))
     mean = da2.groupby("_cond").mean(dim=trial_dim, keep_attrs=True)
-    return mean.unstack("_cond").fillna(0.0)
+    out = mean.unstack("_cond")
+
+    # Missing condition combinations produce all-NaN cells after unstack.
+    # dPCA assumes a complete factorial condition grid.
+    is_na = out.isnull()
+    other_dims = [d for d in out.dims if d not in condition_dims]
+    if other_dims:
+        missing = is_na.all(dim=other_dims)
+    else:
+        missing = is_na
+
+    if bool(missing.any()):
+        raise ValueError(
+            "dPCA requires complete condition combinations across labels. "
+            "Found missing condition cells; aggregate/trim labels or provide "
+            "pre-averaged complete condition data."
+        )
+
+    return out
 
 
 def _marginal_label(factors: Sequence[str], *, time_dim: str) -> str:

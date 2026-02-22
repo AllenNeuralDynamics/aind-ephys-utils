@@ -412,6 +412,21 @@ class ReduceMethodsTest(unittest.TestCase):
             out["weights"].dims, ("marginal", "component", "unit")
         )
 
+    def test_reduce_dpca_missing_condition_combinations_raises(self) -> None:
+        """dPCA should fail when label combinations are incomplete."""
+        da = self._make_reduce_data()
+        da = da.assign_coords(
+            block=("trial", np.array([0, 0, 1, 1, 1, 1], dtype=int))
+        )
+        with self.assertRaisesRegex(ValueError, "complete condition combinations"):
+            _ = reduce(
+                da,
+                method="dpca",
+                dim="unit",
+                n_components=2,
+                labels=["choice", "block"],
+            )
+
     def test_reduce_gpfa(self) -> None:
         """GPFA returns projections and weights with expected dimensions."""
         da = self._make_reduce_data()
