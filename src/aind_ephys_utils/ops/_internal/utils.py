@@ -198,7 +198,7 @@ def to_dataarray_input(
     return xr.DataArray(arr, dims=da_dims, coords=da_coords), "ndarray"
 
 
-def from_dataarray_output(
+def from_dataarray_output(  # noqa: C901
     out: xr.DataArray,
     *,
     input_kind: str,
