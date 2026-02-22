@@ -13,7 +13,10 @@
 
 Helpful methods for exploring *in vivo* electrophysiology data.
 
-.. image:: _static/aind-ephys-utils.png
+.. image:: /_static/aind-ephys-utils.png
+   :alt: DataArray with trial, event, and bound coords.
+   :width: 70%
+
 
 Installation
 ############
@@ -25,7 +28,7 @@ Installation
 Key concepts
 ############
 
-All analysis happens on Xarray ``DataArray`` objects with labeled dimensions and coordinates, via the ``ephys`` accessor:
+Analysis happens on Xarray ``DataArray`` objects with labeled dimensions and coordinates, via the ``ephys`` accessor:
 - ``da.ephys.align(...)``
 - ``da.ephys.reduce(...)``
 - ``da.ephys.psth(...)``
@@ -43,7 +46,7 @@ Example usage (with NWB)
 
 .. code-block:: python
 
-   from aind_ephys_utils.adapters import from_dataframe
+   from aind_ephys_utils import from_dataframe
    from pynwb import NWBHDF5IO
 
    # read the file

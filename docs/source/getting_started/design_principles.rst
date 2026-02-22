@@ -25,6 +25,10 @@ Data model assumptions
 - Ragged spikes are stored as object arrays with dims ``(trial, unit)`` or simply ``(unit,)``.
 - Binned spikes are numeric with dims ``(trial, unit, time)``.
 
+Using Xarray ``DataArrays`` is recommended, but many operations are also compatible with Numpy inputs, provided they are formatted correctly.
+
+This package assumes spike times for each unit are *always* sorted in ascending order; if not, many of the operations will fail.
+
 Coords and attributes are first‑class
 -------------------------------------
 

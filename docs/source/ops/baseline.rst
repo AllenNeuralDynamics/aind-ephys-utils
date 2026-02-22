@@ -15,3 +15,5 @@ Notes
 
 - Modes: ``subtract``, ``divide``, ``zscore``.
 - The baseline window must overlap the time coordinate.
+- NumPy inputs are supported. For dense arrays, provide ``dims`` and a time
+  coordinate via ``coords``.

@@ -20,7 +20,7 @@ To start working with spike data, it needs to be stored in a ``DataArray`` with 
 .. code-block:: python
 
    import pandas as pd
-   from aind_ephys_utils.adapters import from_dataframe
+   from aind_ephys_utils import from_dataframe
 
    units_df = pd.DataFrame({
        "unit_id": [0, 1],
