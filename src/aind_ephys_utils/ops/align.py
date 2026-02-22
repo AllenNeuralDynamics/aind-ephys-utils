@@ -15,7 +15,7 @@ import xarray as xr
 
 from ..standards.conventions import C
 from ..standards.validate import infer_kind, validate
-from .utils import preserve_coords
+from ._internal.utils import preserve_coords
 
 
 class EphysAlignError(ValueError):

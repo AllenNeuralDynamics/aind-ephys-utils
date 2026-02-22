@@ -6,7 +6,7 @@ from typing import Tuple, Union
 
 import xarray as xr
 
-from .utils import preserve_coords
+from ._internal.utils import preserve_coords
 
 
 def normalize(

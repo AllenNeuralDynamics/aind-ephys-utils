@@ -17,9 +17,9 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 
 from ..standards.conventions import C
-from .dpca import dPCA
-from .gpfa import gpfa as _gpfa
-from .utils import preserve_coords
+from ._internal.dpca import dPCA
+from ._internal.gpfa import gpfa as _gpfa
+from ._internal.utils import preserve_coords
 
 
 def reduce(  # noqa: C901

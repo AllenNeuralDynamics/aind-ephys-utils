@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 
 from ..standards.conventions import C
-from .utils import preserve_coords
+from ._internal.utils import preserve_coords
 
 
 def smooth(

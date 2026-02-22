@@ -7,7 +7,6 @@ effects.
 from .align import align
 from .baseline import baseline
 from .bin import bin
-from .gpfa import gpfa
 from .normalize import normalize
 from .pseudopop import pseudopop
 from .psth import psth
@@ -19,7 +18,6 @@ __all__ = [
     "align",
     "baseline",
     "bin",
-    "gpfa",
     "normalize",
     "psth",
     "pseudopop",
