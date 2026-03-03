@@ -69,7 +69,8 @@ instance/
 .scrapy
 
 # Sphinx documentation
-doc_template/build
+docs/build
+docs/source/api
 
 # PyBuilder
 target/
@@ -138,9 +139,12 @@ dmypy.json
 # MacOs
 **/.DS_Store
 
+# VS Code
 .vscode
-
 code/.vscode
+
+# Notebooks for testing
+notebooks
 
 # CodeOcean
 environment 

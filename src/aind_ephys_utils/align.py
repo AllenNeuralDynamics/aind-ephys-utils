@@ -1,4 +1,4 @@
-""" Module to align two sorted temporal sequences
+"""Module to align two sorted temporal sequences
 (usually spike times and events).
 """
 
@@ -198,3 +198,28 @@ def to_events(  # noqa: C901
 
 align_to_events = to_events
 """ Alias for `to_events` """
+
+
+def events_to_dataset(events: xr.DataArray) -> xr.Dataset:
+    """
+    Convert a canonical events DataArray into a Dataset with a ``t`` variable.
+
+    Parameters
+    ----------
+    events:
+        Events DataArray with dims (trial, event, bound). The ``bound`` coord
+        should include ``"start"`` and ``"end"``. The returned Dataset uses the
+        ``"start"`` bound by default.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with variable ``t`` containing event times.
+    """
+    if not isinstance(events, xr.DataArray):
+        raise TypeError("events must be an xarray.DataArray.")
+    if "bound" not in events.dims:
+        raise ValueError("events must have a 'bound' dimension.")
+    if "start" not in events.coords.get("bound", []):
+        raise ValueError("events['bound'] must include 'start'.")
+    return xr.Dataset({"t": events.sel(bound="start")})
