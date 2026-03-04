@@ -14,6 +14,10 @@ Helpful methods for exploring *in vivo* electrophysiology data.
 pip install aind-ephys-utils
 ```
 
+## Level of support
+
+This package is under active development, and breaking changes to the API may be introduced at any time. We recommend pinning the version for any code that must run reproducibly.
+
 
 ## Usage
 

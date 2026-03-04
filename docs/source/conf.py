@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath("../../src"))
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "aind-ephys-utils"
-copyright = "2022, Allen Institute of Neural Dynamics"
+copyright = "2026, Allen Institute of Neural Dynamics"
 author = "Allen Institute of Neural Dynamics"
 release = aind_ephys_utils.__version__
 
