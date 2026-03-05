@@ -8,6 +8,7 @@ import xarray as xr
 
 from ._internal.utils import (
     DataInput,
+    _safe_divide,
     from_dataarray_output,
     preserve_coords,
     to_dataarray_input,
@@ -63,24 +64,16 @@ def normalize(
     if method == "zscore":
         mean = da.mean(dim=dims, keep_attrs=True)
         std = da.std(dim=dims, keep_attrs=True)
-        denom = std.where(std != 0)
-        out = (da - mean) / denom
-        out = out.where(std != 0, 0.0)
+        out = _safe_divide(da - mean, std, std != 0)
     elif method == "minmax":
         vmin = da.min(dim=dims, keep_attrs=True)
         vmax = da.max(dim=dims, keep_attrs=True)
-        denom = (vmax - vmin).where(vmax != vmin)
-        out = (da - vmin) / denom
-        out = out.where(vmax != vmin, 0.0)
+        out = _safe_divide(da - vmin, vmax - vmin, vmax != vmin)
     elif method == "robust":
         qs = da.quantile([0.25, 0.75], dim=dims, keep_attrs=True)
-        q25 = qs.sel(quantile=0.25)
-        q75 = qs.sel(quantile=0.75)
-        iqr = q75 - q25
+        iqr = qs.sel(quantile=0.75) - qs.sel(quantile=0.25)
         median = da.quantile(0.5, dim=dims, keep_attrs=True)
-        denom = iqr.where(iqr != 0)
-        out = (da - median) / denom
-        out = out.where(iqr != 0, 0.0)
+        out = _safe_divide(da - median, iqr, iqr != 0)
     else:
         raise ValueError(f"Unknown normalization method {method!r}.")
 

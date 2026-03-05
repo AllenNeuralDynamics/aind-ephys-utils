@@ -9,6 +9,7 @@ import xarray as xr
 from ..standards.conventions import C
 from ._internal.utils import (
     DataInput,
+    _safe_divide,
     from_dataarray_output,
     preserve_coords,
     to_dataarray_input,
@@ -76,9 +77,7 @@ def baseline(
         out = da / mean
     elif mode == "zscore":
         std = baseline_da.std(dim=dim, keep_attrs=True)
-        denom = std.where(std != 0)
-        out = (da - mean) / denom
-        out = out.where(std != 0, 0.0)
+        out = _safe_divide(da - mean, std, std != 0)
     else:
         raise ValueError(f"Unknown baseline mode {mode!r}.")
 

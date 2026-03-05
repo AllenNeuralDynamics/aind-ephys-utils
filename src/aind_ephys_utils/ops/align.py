@@ -202,11 +202,12 @@ def _align_ragged(
         )
     n_units = da.sizes[C.unit]
 
-    # Process each unit with vectorized searchsorted
+    # Transpose once so data[0, u] is safe regardless of original dim order,
+    # then read each unit's spike array directly from the numpy object array
+    # (avoids creating a new xarray DataArray per unit via .isel()).
+    da_tu = da.transpose(C.trial, C.unit)
     results = [
-        _align_unit(
-            da.isel({C.trial: 0, C.unit: u}).item(), t0_vals, tmin, tmax
-        )
+        _align_unit(da_tu.data[0, u], t0_vals, tmin, tmax)
         for u in range(n_units)
     ]
 

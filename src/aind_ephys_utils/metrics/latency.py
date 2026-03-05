@@ -56,8 +56,11 @@ def spike_latency(
     individual_latencies : ndarray
         Latency values for all trials with spikes
     """
+    # 5-point Hann window: light smoothing while preserving temporal precision
+    _HANN_5PT = np.array([0, 0.25, 0.5, 0.25, 0])
+
     if use_psth:
-        win = np.array([0, 0.25, 0.5, 0.25, 0])  # 5-point Hann window
+        win = _HANN_5PT
 
         bins, counts, unit_ids = align.to_events(
             times, events, interval, bin_size=bin_size

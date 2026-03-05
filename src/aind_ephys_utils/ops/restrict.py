@@ -70,12 +70,9 @@ def restrict(
         )
 
     data = np.empty(da.shape, dtype=object)
-    it = np.nditer(
-        np.empty(da.shape, dtype=int),
-        flags=["multi_index", "refs_ok"],
-    )
-    for _ in it:
-        idx = it.multi_index
+    # np.ndindex iterates over all index tuples for an arbitrary shape,
+    # which handles (unit,), (trial,), and (trial, unit) uniformly.
+    for idx in np.ndindex(*da.shape):
         x = da.values[idx]
         if x is None:
             data[idx] = np.asarray([], dtype=float)

@@ -104,28 +104,21 @@ def bin(  # noqa: C901
     has_unit = C.unit in da.dims
 
     if has_trial and has_unit:
-        data = _bin_trial_unit(da, edges)
+        # Preserve the original (trial, unit) vs (unit, trial) ordering.
         if da.dims.index(C.trial) < da.dims.index(C.unit):
+            data = _bin_ragged(da, edges, (C.trial, C.unit))
             dims = (C.trial, C.unit, C.time)
-            coords = {
-                C.trial: da[C.trial],
-                C.unit: da[C.unit],
-                C.time: centers,
-            }
+            coords = {C.trial: da[C.trial], C.unit: da[C.unit], C.time: centers}
         else:
-            data = np.transpose(data, (1, 0, 2))
+            data = _bin_ragged(da, edges, (C.unit, C.trial))
             dims = (C.unit, C.trial, C.time)
-            coords = {
-                C.unit: da[C.unit],
-                C.trial: da[C.trial],
-                C.time: centers,
-            }
+            coords = {C.unit: da[C.unit], C.trial: da[C.trial], C.time: centers}
     elif has_unit:
-        data = _bin_unit(da, edges)
+        data = _bin_ragged(da, edges, (C.unit,))
         dims = (C.unit, C.time)
         coords = {C.unit: da[C.unit], C.time: centers}
     elif has_trial:
-        data = _bin_trial(da, edges)
+        data = _bin_ragged(da, edges, (C.trial,))
         dims = (C.trial, C.time)
         coords = {C.trial: da[C.trial], C.time: centers}
     else:
@@ -172,43 +165,33 @@ def _infer_tlim(da: xr.DataArray) -> Tuple[float, float]:
     return tmin, tmax
 
 
-def _bin_trial_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
-    """Bin spikes for (trial, unit) ragged input."""
-    da_tu = da.transpose(C.trial, C.unit)
-    n_trials, n_units = da_tu.shape
-    n_bins = len(edges) - 1
-    out = np.zeros((n_trials, n_units, n_bins), dtype=float)
-    for i in range(n_trials):
-        for j in range(n_units):
-            arr = _ensure_1d_float_array(da_tu.data[i, j])
-            if arr.size:
-                out[i, j], _ = np.histogram(arr, bins=edges)
-    return out
+def _bin_ragged(
+    da: xr.DataArray, edges: np.ndarray, ordered_dims: tuple
+) -> np.ndarray:
+    """Bin ragged spikes, iterating over all index combinations of ordered_dims.
 
-
-def _bin_unit(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
-    """Bin spikes for (unit,) ragged input."""
-    da_u = da.transpose(C.unit)
-    n_units = da_u.shape[0]
+    Parameters
+    ----------
+    da:
+        Ragged spike DataArray.
+    edges:
+        Histogram bin edges.
+    ordered_dims:
+        Dimension names to iterate over, in the desired output order.
+        The output shape is (*[da.sizes[d] for d in ordered_dims], n_bins).
+    """
+    da_ordered = da.transpose(*ordered_dims)
+    shape = da_ordered.shape
     n_bins = len(edges) - 1
-    out = np.zeros((n_units, n_bins), dtype=float)
-    for j in range(n_units):
-        arr = _ensure_1d_float_array(da_u.data[j])
+    out = np.zeros(shape + (n_bins,), dtype=float)
+    for idx in np.ndindex(*shape):
+        arr = _ensure_1d_float_array(da_ordered.data[idx])
         if arr.size:
-            out[j], _ = np.histogram(arr, bins=edges)
-    return out
-
-
-def _bin_trial(da: xr.DataArray, edges: np.ndarray) -> np.ndarray:
-    """Bin spikes for (trial,) ragged input."""
-    da_t = da.transpose(C.trial)
-    n_trials = da_t.shape[0]
-    n_bins = len(edges) - 1
-    out = np.zeros((n_trials, n_bins), dtype=float)
-    for i in range(n_trials):
-        arr = _ensure_1d_float_array(da_t.data[i])
-        if arr.size:
-            out[i], _ = np.histogram(arr, bins=edges)
+            # np.searchsorted is faster than np.histogram here because the
+            # edges are already known and spike times are sorted ascending.
+            # np.diff(searchsorted(arr, edges)) gives the same bin counts
+            # as np.histogram(arr, bins=edges) for sorted input.
+            out[idx] = np.diff(np.searchsorted(arr, edges))
     return out
 
 

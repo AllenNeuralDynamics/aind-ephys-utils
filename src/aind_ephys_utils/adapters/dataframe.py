@@ -252,12 +252,156 @@ def _infer_valid_interval(da: xr.DataArray) -> Tuple[float, float]:
     return tmin, tmax
 
 
+def _to_hashable(tid) -> object:
+    """Convert a trial ID value to a hashable form for use as a dict key."""
+    if np.isscalar(tid):
+        return tid
+    if hasattr(tid, "__iter__"):
+        return tuple(tid)
+    return tid
+
+
+def _unique_ordered_trial_ids(
+    trial_ids: np.ndarray,
+) -> Tuple[np.ndarray, Dict[object, int], Dict[object, int]]:
+    """Return unique trial IDs in first-appearance order with index maps.
+
+    Parameters
+    ----------
+    trial_ids:
+        All trial IDs (may contain duplicates for long-format tables).
+
+    Returns
+    -------
+    unique_ids:
+        Array of unique trial IDs in order of first appearance.
+    id_to_index:
+        Maps hashable trial ID -> position in unique_ids.
+    id_to_first_row:
+        Maps hashable trial ID -> first row index in the original array.
+    """
+    unique_ids: list = []
+    id_to_index: Dict[object, int] = {}
+    id_to_first_row: Dict[object, int] = {}
+    for row_idx, tid in enumerate(trial_ids):
+        key = _to_hashable(tid)
+        if key not in id_to_index:
+            id_to_index[key] = len(unique_ids)
+            id_to_first_row[key] = row_idx
+            unique_ids.append(tid)
+    return np.asarray(unique_ids), id_to_index, id_to_first_row
+
+
 def _looks_like_units_df(df: pd.DataFrame, spike_times_col: str) -> bool:
     """Heuristic check for whether a DataFrame looks like a units/spikes table."""
     return spike_times_col in df.columns
 
 
-def _build_events(  # noqa: C901
+def _parse_long_format_events(
+    trials_df: pd.DataFrame,
+    *,
+    trial_id_col: Optional[str],
+    long_event_col: str,
+    long_time_col: str,
+    long_end_time_col: Optional[str],
+) -> Tuple[np.ndarray, List[str], np.ndarray, Dict[object, int]]:
+    """Build the event data matrix from a long-format trials DataFrame.
+
+    Returns
+    -------
+    data:
+        Float array of shape (n_trials, n_events, 2) with start/end times.
+    event_names:
+        Ordered list of unique event names.
+    trial_ids:
+        Unique trial IDs in first-appearance order.
+    id_to_first_row:
+        Maps hashable trial ID to its first row index (for metadata extraction).
+    """
+    if (
+        long_event_col not in trials_df.columns
+        or long_time_col not in trials_df.columns
+    ):
+        raise FromDataFrameError(
+            "Long-format events requires columns "
+            f"{long_event_col!r} and {long_time_col!r}."
+        )
+
+    all_trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+    trial_ids, id_to_index, id_to_first_row = _unique_ordered_trial_ids(
+        all_trial_ids
+    )
+
+    # Preserve event label order of first appearance
+    seen_events: set = set()
+    event_names: List[str] = []
+    for v in _col_to_str_numpy(trials_df, long_event_col):
+        if v not in seen_events:
+            event_names.append(v)
+            seen_events.add(v)
+    ev_to_i = {ev: i for i, ev in enumerate(event_names)}
+
+    t_start = _col_to_float_numpy(trials_df, long_time_col)
+    t_end = (
+        _col_to_float_numpy(trials_df, long_end_time_col)
+        if long_end_time_col and long_end_time_col in trials_df.columns
+        else t_start
+    )
+
+    data = np.full((len(trial_ids), len(event_names), 2), np.nan, dtype=float)
+    for row_idx in range(len(trials_df)):
+        tid_key = _to_hashable(all_trial_ids[row_idx])
+        trial_idx = id_to_index[tid_key]
+        event_idx = ev_to_i[str(_get_cell(trials_df, row_idx, long_event_col))]
+        data[trial_idx, event_idx, 0] = t_start[row_idx]
+        data[trial_idx, event_idx, 1] = t_end[row_idx]
+
+    return data, event_names, trial_ids, id_to_first_row
+
+
+def _parse_wide_format_events(
+    trials_df: pd.DataFrame,
+    *,
+    trial_id_col: Optional[str],
+    event_cols: Dict[str, str],
+    epoch_cols: Dict[str, Tuple[str, str]],
+) -> Tuple[np.ndarray, List[str], np.ndarray]:
+    """Build the event data matrix from a wide-format trials DataFrame.
+
+    Returns
+    -------
+    data:
+        Float array of shape (n_trials, n_events, 2) with start/end times.
+    event_names:
+        Ordered list of event/epoch names.
+    trial_ids:
+        Trial IDs (one per row, in row order).
+    """
+    if not event_cols and not epoch_cols:
+        raise FromDataFrameError(
+            "Could not infer any events/epochs. Provide event_cols/epoch_cols, "
+            "or include columns like *_time or *_start/_end."
+        )
+
+    event_names = list(event_cols.keys()) + list(epoch_cols.keys())
+    data = np.full((len(trials_df), len(event_names), 2), np.nan, dtype=float)
+
+    for k, name in enumerate(event_cols.keys()):
+        ts = _col_to_float_numpy(trials_df, event_cols[name])
+        data[:, k, 0] = ts
+        data[:, k, 1] = ts  # instantaneous: start == end
+
+    offset = len(event_cols)
+    for j, name in enumerate(epoch_cols.keys()):
+        sc, ec = epoch_cols[name]
+        data[:, offset + j, 0] = _col_to_float_numpy(trials_df, sc)
+        data[:, offset + j, 1] = _col_to_float_numpy(trials_df, ec)
+
+    trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+    return data, event_names, trial_ids
+
+
+def _build_events(
     trials_df: pd.DataFrame,
     *,
     trial_id_col: Optional[str],
@@ -278,115 +422,24 @@ def _build_events(  # noqa: C901
     use_long = long_event_col is not None and long_time_col is not None
     if not use_long and event_cols is None and epoch_cols is None:
         event_cols, epoch_cols = _infer_wide_event_cols(trials_df)
-
     event_cols = event_cols or {}
     epoch_cols = epoch_cols or {}
 
     if use_long:
-        if (
-            long_event_col not in trials_df.columns
-            or long_time_col not in trials_df.columns
-        ):
-            raise FromDataFrameError(
-                "Long-format events requires columns "
-                f"{long_event_col!r} and {long_time_col!r}."
-            )
-
-        # Get unique trial IDs in order of first appearance
-        trial_ids = _get_ids(trials_df, trial_id_col, "trial")
-        unique_trial_ids = []
-        seen_trials = set()
-        for tid in trial_ids:
-            # Handle potential non-hashable types
-            tid_key = (
-                tid
-                if np.isscalar(tid)
-                else tuple(tid) if hasattr(tid, "__iter__") else tid
-            )
-            if tid_key not in seen_trials:
-                unique_trial_ids.append(tid)
-                seen_trials.add(tid_key)
-        unique_trial_ids = np.asarray(unique_trial_ids)
-        n_trials = len(unique_trial_ids)
-
-        # Create mapping from trial_id to index
-        trial_to_idx = {}
-        for i, tid in enumerate(unique_trial_ids):
-            tid_key = (
-                tid
-                if np.isscalar(tid)
-                else tuple(tid) if hasattr(tid, "__iter__") else tid
-            )
-            trial_to_idx[tid_key] = i
-
-        # Preserve event label order
-        seen_events = set()
-        event_names: List[str] = []
-        for v in _col_to_str_numpy(trials_df, long_event_col):
-            if v not in seen_events:
-                event_names.append(v)
-                seen_events.add(v)
-
-        data = np.full((n_trials, len(event_names), 2), np.nan, dtype=float)
-        ev_to_i = {ev: i for i, ev in enumerate(event_names)}
-
-        t_start = _col_to_float_numpy(trials_df, long_time_col)
-        if long_end_time_col and long_end_time_col in trials_df.columns:
-            t_end = _col_to_float_numpy(trials_df, long_end_time_col)
-        else:
-            t_end = t_start
-
-        # Build mapping from trial_id to first row index for metadata
-        trial_id_to_first_row = {}
-        all_trial_ids = _get_ids(trials_df, trial_id_col, "trial")
-        for r in range(len(trials_df)):
-            tid = all_trial_ids[r]
-            tid_key = (
-                tid
-                if np.isscalar(tid)
-                else tuple(tid) if hasattr(tid, "__iter__") else tid
-            )
-            if tid_key not in trial_id_to_first_row:
-                trial_id_to_first_row[tid_key] = r
-            ti = trial_to_idx[tid_key]
-            ev = str(_get_cell(trials_df, r, long_event_col))
-            ei = ev_to_i[ev]
-            data[ti, ei, 0] = t_start[r]
-            data[ti, ei, 1] = t_end[r]
-
-        # Override trial_ids with unique ones for the DataArray
-        trial_ids = unique_trial_ids
-
-    else:
-        if not event_cols and not epoch_cols:
-            raise FromDataFrameError(
-                "Could not infer any events/epochs. Provide event_cols/epoch_cols, "
-                "or include columns like *_time or *_start/_end."
-            )
-
-        event_names = list(event_cols.keys()) + list(epoch_cols.keys())
-        data = np.full(
-            (len(trials_df), len(event_names), 2), np.nan, dtype=float
+        data, event_names, trial_ids, id_to_first_row = _parse_long_format_events(
+            trials_df,
+            trial_id_col=trial_id_col,
+            long_event_col=long_event_col,
+            long_time_col=long_time_col,
+            long_end_time_col=long_end_time_col,
         )
-
-        # instantaneous events
-        for k, name in enumerate(event_cols.keys()):
-            col = event_cols[name]
-            ts = _col_to_float_numpy(trials_df, col)
-            data[:, k, 0] = ts
-            data[:, k, 1] = ts
-
-        # epochs
-        off = len(event_cols)
-        for j, name in enumerate(epoch_cols.keys()):
-            sc, ec = epoch_cols[name]
-            ts = _col_to_float_numpy(trials_df, sc)
-            te = _col_to_float_numpy(trials_df, ec)
-            data[:, off + j, 0] = ts
-            data[:, off + j, 1] = te
-
-        # Get trial_ids for wide format
-        trial_ids = _get_ids(trials_df, trial_id_col, "trial")
+    else:
+        data, event_names, trial_ids = _parse_wide_format_events(
+            trials_df,
+            trial_id_col=trial_id_col,
+            event_cols=event_cols,
+            epoch_cols=epoch_cols,
+        )
 
     events = xr.DataArray(
         data,
@@ -398,45 +451,34 @@ def _build_events(  # noqa: C901
         },
         name="events",
     )
-
     events.attrs[C.attr_time_unit] = time_unit
     events.attrs[C.attr_timebase] = timebase
     events.attrs[C.attr_kind] = "events"
     events.attrs[C.attr_history] = ["from_dataframe(events)"]
 
-    # attach trial metadata as coords
+    # Determine which columns to attach as trial-level coordinates.
     if trial_coords is None:
         exclude = set()
         if trial_id_col is not None:
             exclude.add(trial_id_col)
         exclude |= set(event_cols.values())
         for sc, ec in epoch_cols.values():
-            exclude.add(sc)
-            exclude.add(ec)
-        if long_event_col:
-            exclude.add(long_event_col)
-        if long_time_col:
-            exclude.add(long_time_col)
-        if long_end_time_col:
-            exclude.add(long_end_time_col)
+            exclude.update([sc, ec])
+        for col in (long_event_col, long_time_col, long_end_time_col):
+            if col:
+                exclude.add(col)
         trial_coords = _default_coords(trials_df, exclude)
 
-    # Extract metadata for each unique trial
     if use_long:
-        # For long format, extract metadata from first row of each trial
+        # Long format: one metadata value per unique trial, taken from first row.
         for c in trial_coords:
             coord_values = np.empty(len(trial_ids), dtype=object)
             for i, tid in enumerate(trial_ids):
-                tid_key = (
-                    tid
-                    if np.isscalar(tid)
-                    else tuple(tid) if hasattr(tid, "__iter__") else tid
-                )
-                row_idx = trial_id_to_first_row[tid_key]
+                row_idx = id_to_first_row[_to_hashable(tid)]
                 coord_values[i] = _get_cell(trials_df, row_idx, c)
             events = events.assign_coords({c: (C.trial, coord_values)})
     else:
-        # For wide format, use all rows directly
+        # Wide format: one row per trial, attach columns directly.
         for c in trial_coords:
             events = events.assign_coords(
                 {c: (C.trial, _col_to_numpy(trials_df, c))}
@@ -542,7 +584,7 @@ def _build_spikes_with_trials(  # noqa: C901
                 f"trials_df must contain trial_end_col={trial_end_col!r}."
             )
 
-    da_session = _build_spikes_units_only(
+    spikes_session = _build_spikes_units_only(
         units_df,
         spike_times_col=spike_times_col,
         unit_id_col=unit_id_col,
@@ -590,7 +632,7 @@ def _build_spikes_with_trials(  # noqa: C901
 
     if bin_size is None:
         da = ops_align(
-            da_session, events=events, to=anchor_name, window=window_use
+            spikes_session, events=events, to=anchor_name, window=window_use
         )
         da.attrs[C.attr_kind] = "spikes_ragged"
     else:
@@ -607,7 +649,7 @@ def _build_spikes_with_trials(  # noqa: C901
             centers = None
 
         aligned = ops_align(
-            da_session, events=events, to=anchor_name, window=window_use
+            spikes_session, events=events, to=anchor_name, window=window_use
         )
         da = ops_bin(
             aligned,

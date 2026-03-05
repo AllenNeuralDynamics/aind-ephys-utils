@@ -190,13 +190,33 @@ def reduce(  # noqa: C901
         sample_dims = stack
         feature_dims = _feature_dims(da.dims, sample_dims, dim=dim)
 
+    return _reduce_pca(
+        da,
+        sample_dims=sample_dims,
+        feature_dims=feature_dims,
+        n_components=n_components,
+        unstack=unstack,
+        return_dataset=return_dataset,
+    )
+
+
+def _reduce_pca(
+    da: xr.DataArray,
+    *,
+    sample_dims: Sequence[str],
+    feature_dims: Sequence[str],
+    n_components: int,
+    unstack: bool,
+    return_dataset: bool,
+) -> Union[xr.DataArray, xr.Dataset]:
+    """Run PCA and return projections (and optionally weights + explained variance)."""
     da_stack = _stack_for_pca(da, sample_dims, feature_dims)
-    X = np.asarray(da_stack.data)
-    if np.isnan(X).any():
+    neural_data = np.asarray(da_stack.data)
+    if np.isnan(neural_data).any():
         raise ValueError("PCA does not support NaN values.")
 
     model = PCA(n_components=n_components)
-    scores = model.fit_transform(X)
+    scores = model.fit_transform(neural_data)
 
     out = xr.DataArray(
         scores,
@@ -213,25 +233,21 @@ def reduce(  # noqa: C901
         out = out.unstack("_sample")
 
     out = preserve_coords(da, out)
-    if return_dataset:
-        evr = xr.DataArray(
-            model.explained_variance_ratio_,
-            dims=("component",),
-            coords={"component": np.arange(n_components)},
-            name="explained_variance_ratio",
-        )
-        weights = _weights_to_dataarray(
-            model.components_, da_stack, component_count=n_components
-        )
-        ds = xr.Dataset(
-            {
-                "projections": out,
-                "weights": weights,
-                "explained_variance_ratio": evr,
-            }
-        )
-        return ds
-    return out
+    if not return_dataset:
+        return out
+
+    evr = xr.DataArray(
+        model.explained_variance_ratio_,
+        dims=("component",),
+        coords={"component": np.arange(n_components)},
+        name="explained_variance_ratio",
+    )
+    weights = _weights_to_dataarray(
+        model.components_, da_stack, component_count=n_components
+    )
+    return xr.Dataset(
+        {"projections": out, "weights": weights, "explained_variance_ratio": evr}
+    )
 
 
 def _feature_dims(
@@ -568,52 +584,19 @@ def _reduce_supervised(  # noqa: C901
     if method == "rrr":
         if targets is None:
             raise ValueError("targets are required for method='rrr'.")
-        Y, target_dim = _stack_targets(targets, sample_dims=sample_dims)
-        mask = _target_mask(Y)
-        for w in windows:
-            window_mask = (
-                _window_mask(da_stack_full, time_dim=time_dim, window=w)
-                if w is not None
-                else None
-            )
-            mask_w = mask
-            if window_mask is not None:
-                mask_w = mask_w & window_mask
-            X_fit, Y_fit = X[mask_w], Y[mask_w]
-            da_stack = da_stack_full.isel(_sample=mask_w)
-            if X_fit.size == 0:
-                raise ValueError(
-                    "No samples available after window/target filtering."
-                )
-            if regularization is None:
-                reg = 0.0
-            else:
-                reg = float(regularization)
-            XtX = X_fit.T @ X_fit
-            if reg > 0:
-                XtX = XtX + reg * np.eye(XtX.shape[0])
-            B = np.linalg.pinv(XtX) @ X_fit.T @ Y_fit
-            U, S, Vt = np.linalg.svd(B, full_matrices=False)
-            r = rank if rank is not None else n_components
-            if r is None:
-                raise ValueError(
-                    "rank or n_components is required for method='rrr'."
-                )
-            r = int(r)
-            U_r = U[:, :r]
-            U_r = _orthogonalize_weights(U_r.T, method=orthogonalize).T
-            X_proj, da_proj = _select_projection(
-                X_full, da_stack_full, window_mask, window_apply
-            )
-            mode_entries.append(
-                {
-                    "label": "rrr",
-                    "window": w,
-                    "weights": U_r.T,
-                    "X_proj": X_proj,
-                    "da_proj": da_proj,
-                }
-            )
+        mode_entries = _reduce_rrr(
+            X_full=X_full,
+            da_stack_full=da_stack_full,
+            targets=targets,
+            sample_dims=sample_dims,
+            windows=windows,
+            time_dim=time_dim,
+            window_apply=window_apply,
+            rank=rank,
+            n_components=n_components,
+            regularization=regularization,
+            orthogonalize=orthogonalize,
+        )
         return _assemble_supervised_output(
             da,
             mode_entries=mode_entries,
@@ -624,6 +607,69 @@ def _reduce_supervised(  # noqa: C901
         )
 
     raise NotImplementedError(f"Unhandled supervised method {method!r}.")
+
+
+def _reduce_rrr(
+    *,
+    X_full: np.ndarray,
+    da_stack_full: xr.DataArray,
+    targets: xr.DataArray,
+    sample_dims: Sequence[str],
+    windows: Sequence[Optional[Tuple[float, float]]],
+    time_dim: str,
+    window_apply: str,
+    rank: Optional[int],
+    n_components: Optional[int],
+    regularization: Optional[float],
+    orthogonalize: str,
+) -> list:
+    """Fit reduced-rank regression and return a list of mode entries.
+
+    For each window, fits OLS then truncates to the top-r left singular
+    vectors of the regression matrix B = (X'X + λI)⁻¹ X'Y.
+    """
+    Y, _ = _stack_targets(targets, sample_dims=sample_dims)
+    base_mask = _target_mask(Y)
+    r = rank if rank is not None else n_components
+    if r is None:
+        raise ValueError("rank or n_components is required for method='rrr'.")
+    r = int(r)
+    reg = float(regularization) if regularization is not None else 0.0
+
+    mode_entries = []
+    for w in windows:
+        window_mask = (
+            _window_mask(da_stack_full, time_dim=time_dim, window=w)
+            if w is not None
+            else None
+        )
+        mask_w = base_mask if window_mask is None else base_mask & window_mask
+        X_fit, Y_fit = X_full[mask_w], Y[mask_w]
+        if X_fit.size == 0:
+            raise ValueError(
+                "No samples available after window/target filtering."
+            )
+
+        XtX = X_fit.T @ X_fit
+        if reg > 0:
+            XtX = XtX + reg * np.eye(XtX.shape[0])
+        B = np.linalg.pinv(XtX) @ X_fit.T @ Y_fit
+        U, _, _ = np.linalg.svd(B, full_matrices=False)
+        U_r = _orthogonalize_weights(U[:, :r].T, method=orthogonalize).T
+
+        X_proj, da_proj = _select_projection(
+            X_full, da_stack_full, window_mask, window_apply
+        )
+        mode_entries.append(
+            {
+                "label": "rrr",
+                "window": w,
+                "weights": U_r.T,
+                "X_proj": X_proj,
+                "da_proj": da_proj,
+            }
+        )
+    return mode_entries
 
 
 def _normalize_supervised_labels(

@@ -301,40 +301,17 @@ def _plot_raster_on_axis(  # noqa: C901
             if tlim is not None:
                 tmin, tmax = tlim
                 seq = [
-                    s[(s >= tmin) & (s <= tmax)] if s.size else s for s in seq
+                    s[np.searchsorted(s, tmin) : np.searchsorted(s, tmax, "right")]  # fmt: skip
+                    if s.size else s for s in seq
                 ]
-
             lineoffsets = np.arange(y0, y0 + len(seq))
             x, y = _flatten_for_scatter(seq, lineoffsets)
-            if x.size:
-                artist = ax.scatter(
-                    x,
-                    y,
-                    s=(
-                        float(markersize)
-                        if markersize is not None
-                        else max(1.0, linewidth * 8.0)
-                    ),
-                    c=c,
-                    alpha=alpha,
-                    marker=".",
-                    linewidths=0,
-                )
-                if rasterized:
-                    try:
-                        artist.set_rasterized(True)
-                    except Exception:
-                        pass
-
-            if label is not None and len(groups) > 1:
-                ax.text(
-                    x=ax.get_xlim()[0] if tlim is None else tlim[0],
-                    y=y0 + len(seq) / 2,
-                    s=str(label),
-                    va="center",
-                    ha="right",
-                    fontsize=9,
-                )
+            _scatter_spikes(
+                ax, x, y,
+                color=c, markersize=markersize, linewidth=linewidth,
+                alpha=alpha, rasterized=rasterized,
+            )
+            _draw_group_label(ax, label, groups, y0, len(seq), tlim)
             y0 += len(seq)
     else:
         for ui, da_u in enumerate(per_unit):
@@ -362,39 +339,14 @@ def _plot_raster_on_axis(  # noqa: C901
                         s[(s >= tmin) & (s <= tmax)] if s.size else s
                         for s in seq
                     ]
-
                 lineoffsets = np.arange(y0, y0 + len(seq))
                 x, y = _flatten_for_scatter(seq, lineoffsets)
-                if x.size:
-                    artist = ax.scatter(
-                        x,
-                        y,
-                        s=(
-                            float(markersize)
-                            if markersize is not None
-                            else max(1.0, linewidth * 8.0)
-                        ),
-                        c=c,
-                        alpha=alpha,
-                        marker=".",
-                        linewidths=0,
-                    )
-                    if rasterized:
-                        try:
-                            artist.set_rasterized(True)
-                        except Exception:
-                            pass
-
-                if label is not None and len(groups) > 1:
-                    ax.text(
-                        x=ax.get_xlim()[0] if tlim is None else tlim[0],
-                        y=y0 + len(seq) / 2,
-                        s=str(label),
-                        va="center",
-                        ha="right",
-                        fontsize=9,
-                    )
-
+                _scatter_spikes(
+                    ax, x, y,
+                    color=c, markersize=markersize, linewidth=linewidth,
+                    alpha=alpha, rasterized=rasterized,
+                )
+                _draw_group_label(ax, label, groups, y0, len(seq), tlim)
                 y0 += len(seq)
 
             unit_end = y0
@@ -422,6 +374,56 @@ def _plot_raster_on_axis(  # noqa: C901
     if set_xlabel:
         time_unit = spikes.attrs.get(C.attr_time_unit, C.default_time_unit)
         ax.set_xlabel(f"Time ({time_unit})")
+
+
+def _scatter_spikes(
+    ax: plt.Axes,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    color: str,
+    markersize: Optional[float],
+    linewidth: float,
+    alpha: Optional[float],
+    rasterized: bool,
+) -> None:
+    """Plot spike times as a scatter on ax (no-op if no spikes)."""
+    if not x.size:
+        return
+    artist = ax.scatter(
+        x,
+        y,
+        s=float(markersize) if markersize is not None else max(1.0, linewidth * 8.0),
+        c=color,
+        alpha=alpha,
+        marker=".",
+        linewidths=0,
+    )
+    if rasterized:
+        try:
+            artist.set_rasterized(True)
+        except Exception:
+            pass
+
+
+def _draw_group_label(
+    ax: plt.Axes,
+    label: Optional[str],
+    groups: list,
+    y0: int,
+    seq_len: int,
+    tlim: Optional[tuple],
+) -> None:
+    """Draw a group label to the left of the plot if multiple groups exist."""
+    if label is not None and len(groups) > 1:
+        ax.text(
+            x=ax.get_xlim()[0] if tlim is None else tlim[0],
+            y=y0 + seq_len / 2,
+            s=str(label),
+            va="center",
+            ha="right",
+            fontsize=9,
+        )
 
 
 def _as_list_of_1d_arrays(values: np.ndarray) -> list[np.ndarray]:
@@ -517,10 +519,12 @@ def _group_indices_by_dim(  # noqa: C901
     if len(group_by) == 1:
         g = group_by[0]
         key_vals = np.asarray(da[g].values)[sort_idx]
+        # Label each group as "coord=value" for single grouping dimensions.
         name_fn = lambda k: f"{g}={k}"  # noqa: E731
     else:
         arrays = [np.asarray(da[g].values)[sort_idx] for g in group_by]
         key_vals = list(zip(*arrays))
+        # Label each group as "coord1=v1,coord2=v2,..." for joint groupings.
         name_fn = lambda k: ",".join(  # noqa: E731
             f"{g}={v}" for g, v in zip(group_by, k)
         )
