@@ -1,8 +1,20 @@
 version: 2
 
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.13"
+  jobs:
+    pre_build:
+      - sphinx-apidoc -f -e -H "API" -o docs/source/api src/aind_ephys_utils
+
 python:
   install:
     - method: pip
       path: .
       extra_requirements:
         - dev
+
+sphinx:
+  # Path to your Sphinx configuration file.
+  configuration: docs/source/conf.py
