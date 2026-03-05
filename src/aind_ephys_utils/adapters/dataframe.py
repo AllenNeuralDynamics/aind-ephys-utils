@@ -401,7 +401,7 @@ def _parse_wide_format_events(
     return data, event_names, trial_ids
 
 
-def _build_events(
+def _build_events(  # noqa: C901
     trials_df: pd.DataFrame,
     *,
     trial_id_col: Optional[str],
@@ -426,12 +426,14 @@ def _build_events(
     epoch_cols = epoch_cols or {}
 
     if use_long:
-        data, event_names, trial_ids, id_to_first_row = _parse_long_format_events(
-            trials_df,
-            trial_id_col=trial_id_col,
-            long_event_col=long_event_col,
-            long_time_col=long_time_col,
-            long_end_time_col=long_end_time_col,
+        data, event_names, trial_ids, id_to_first_row = (
+            _parse_long_format_events(
+                trials_df,
+                trial_id_col=trial_id_col,
+                long_event_col=long_event_col,
+                long_time_col=long_time_col,
+                long_end_time_col=long_end_time_col,
+            )
         )
     else:
         data, event_names, trial_ids = _parse_wide_format_events(

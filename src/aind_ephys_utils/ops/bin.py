@@ -108,11 +108,19 @@ def bin(  # noqa: C901
         if da.dims.index(C.trial) < da.dims.index(C.unit):
             data = _bin_ragged(da, edges, (C.trial, C.unit))
             dims = (C.trial, C.unit, C.time)
-            coords = {C.trial: da[C.trial], C.unit: da[C.unit], C.time: centers}
+            coords = {
+                C.trial: da[C.trial],
+                C.unit: da[C.unit],
+                C.time: centers,
+            }
         else:
             data = _bin_ragged(da, edges, (C.unit, C.trial))
             dims = (C.unit, C.trial, C.time)
-            coords = {C.unit: da[C.unit], C.trial: da[C.trial], C.time: centers}
+            coords = {
+                C.unit: da[C.unit],
+                C.trial: da[C.trial],
+                C.time: centers,
+            }
     elif has_unit:
         data = _bin_ragged(da, edges, (C.unit,))
         dims = (C.unit, C.time)

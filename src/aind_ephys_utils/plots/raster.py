@@ -301,15 +301,28 @@ def _plot_raster_on_axis(  # noqa: C901
             if tlim is not None:
                 tmin, tmax = tlim
                 seq = [
-                    s[np.searchsorted(s, tmin) : np.searchsorted(s, tmax, "right")]  # fmt: skip
-                    if s.size else s for s in seq
+                    (
+                        s[
+                            np.searchsorted(s, tmin): np.searchsorted(
+                                s, tmax, "right"
+                            )
+                        ]
+                        if s.size
+                        else s
+                    )
+                    for s in seq
                 ]
             lineoffsets = np.arange(y0, y0 + len(seq))
             x, y = _flatten_for_scatter(seq, lineoffsets)
             _scatter_spikes(
-                ax, x, y,
-                color=c, markersize=markersize, linewidth=linewidth,
-                alpha=alpha, rasterized=rasterized,
+                ax,
+                x,
+                y,
+                color=c,
+                markersize=markersize,
+                linewidth=linewidth,
+                alpha=alpha,
+                rasterized=rasterized,
             )
             _draw_group_label(ax, label, groups, y0, len(seq), tlim)
             y0 += len(seq)
@@ -342,9 +355,14 @@ def _plot_raster_on_axis(  # noqa: C901
                 lineoffsets = np.arange(y0, y0 + len(seq))
                 x, y = _flatten_for_scatter(seq, lineoffsets)
                 _scatter_spikes(
-                    ax, x, y,
-                    color=c, markersize=markersize, linewidth=linewidth,
-                    alpha=alpha, rasterized=rasterized,
+                    ax,
+                    x,
+                    y,
+                    color=c,
+                    markersize=markersize,
+                    linewidth=linewidth,
+                    alpha=alpha,
+                    rasterized=rasterized,
                 )
                 _draw_group_label(ax, label, groups, y0, len(seq), tlim)
                 y0 += len(seq)
@@ -393,7 +411,11 @@ def _scatter_spikes(
     artist = ax.scatter(
         x,
         y,
-        s=float(markersize) if markersize is not None else max(1.0, linewidth * 8.0),
+        s=(
+            float(markersize)
+            if markersize is not None
+            else max(1.0, linewidth * 8.0)
+        ),
         c=color,
         alpha=alpha,
         marker=".",

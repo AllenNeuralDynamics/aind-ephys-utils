@@ -220,7 +220,7 @@ def reduce(  # noqa: C901
     )
 
 
-def _reduce_tdr(
+def _reduce_tdr(  # noqa: C901
     da: xr.DataArray,
     *,
     dim: str,
@@ -396,7 +396,11 @@ def _reduce_pca(
         model.components_, da_stack, component_count=n_components
     )
     return xr.Dataset(
-        {"projections": out, "weights": weights, "explained_variance_ratio": evr}
+        {
+            "projections": out,
+            "weights": weights,
+            "explained_variance_ratio": evr,
+        }
     )
 
 
