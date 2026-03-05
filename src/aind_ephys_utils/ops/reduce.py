@@ -15,6 +15,7 @@ import xarray as xr
 from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
 from ..standards.conventions import C
 from ._internal.dpca import dPCA
@@ -58,7 +59,7 @@ def reduce(  # noqa: C901
         Input DataArray.
     method:
         Reduction method (e.g. "pca", "gpfa", "dpca",
-        "coding_direction", "logistic", "lda", "rrr").
+        "coding_direction", "logistic", "lda", "rrr", "tdr").
     dim:
         Dimension to reduce across for methods that operate on a single axis.
     n_components:
@@ -113,6 +114,7 @@ def reduce(  # noqa: C901
         "logistic",
         "lda",
         "rrr",
+        "tdr",
     ):
         raise NotImplementedError(
             f"Reduction method {method!r} is not implemented yet."
@@ -177,6 +179,24 @@ def reduce(  # noqa: C901
             cv=cv,
         )
 
+    if method == "tdr":
+        if dim is None:
+            if C.unit in da.dims:
+                dim = C.unit
+            else:
+                raise ValueError("dim is required for method='tdr'.")
+        if n_components is None:
+            n_components = 12
+        return _reduce_tdr(
+            da,
+            dim=dim,
+            time_dim=time_dim,
+            trial_dim=trial_dim,
+            labels=labels,
+            n_pcs=int(n_components),
+            orthogonalize=orthogonalize,
+        )
+
     if n_components is None:
         raise ValueError("n_components is required for PCA methods.")
 
@@ -198,6 +218,136 @@ def reduce(  # noqa: C901
         unstack=unstack,
         return_dataset=return_dataset,
     )
+
+
+def _reduce_tdr(
+    da: xr.DataArray,
+    *,
+    dim: str,
+    time_dim: str,
+    trial_dim: str,
+    labels: Optional[LabelSpec],
+    n_pcs: int,
+    orthogonalize: str,
+) -> xr.Dataset:
+    """Targeted dimensionality reduction (TDR)."""
+    if dim not in da.dims:
+        raise ValueError(f"dim {dim!r} not found in DataArray dims.")
+    if time_dim not in da.dims:
+        raise ValueError(f"time_dim {time_dim!r} not found in DataArray dims.")
+
+    orth_method = orthogonalize.lower()
+    if orth_method not in ("none", "qr", "svd"):
+        raise ValueError("orthogonalize must be 'none', 'qr', or 'svd'.")
+
+    if trial_dim in da.dims:
+        if labels is None:
+            raise ValueError(
+                "labels are required for method='tdr' when input has a trial dimension."
+            )
+        if isinstance(labels, xr.DataArray):
+            raise ValueError(
+                "method='tdr' requires labels to be coordinate name(s), "
+                "not an xarray.DataArray."
+            )
+        if isinstance(labels, str):
+            condition_dims = (labels,)
+        else:
+            if any(isinstance(x, xr.DataArray) for x in labels):
+                raise ValueError(
+                    "method='tdr' requires labels to be coordinate name(s), "
+                    "not xarray.DataArray objects."
+                )
+            condition_dims = tuple(str(x) for x in labels)
+        if len(condition_dims) == 0:
+            raise ValueError("labels is required for method='tdr'.")
+
+        da_cond = _condition_mean(
+            da, trial_dim=trial_dim, condition_dims=condition_dims
+        )
+        if len(condition_dims) == 1:
+            cdim = condition_dims[0]
+            if cdim != "condition":
+                da_cond = da_cond.rename({cdim: "condition"})
+        else:
+            da_cond = da_cond.stack(condition=condition_dims)
+    else:
+        if "condition" in da.dims:
+            da_cond = da
+        else:
+            candidate = [d for d in da.dims if d not in (dim, time_dim)]
+            if len(candidate) != 1:
+                raise ValueError(
+                    "method='tdr' requires either a trial dimension with labels "
+                    "or a single condition-like dimension."
+                )
+            if candidate[0] != "condition":
+                da_cond = da.rename({candidate[0]: "condition"})
+            else:
+                da_cond = da
+
+    da_cond = da_cond.transpose("condition", dim, time_dim)
+    R = np.asarray(da_cond.data)
+    if np.isnan(R).any():
+        raise ValueError(
+            "TDR does not support NaN values. Provide finite condition-averaged input."
+        )
+
+    n_condition, n_unit, n_time = R.shape
+    if n_condition < 2:
+        raise ValueError(
+            "TDR requires at least two conditions after conditioning/averaging."
+        )
+
+    X = np.eye(n_condition, dtype=float)
+    R_fit = R.mean(axis=2)
+    scaler = StandardScaler(with_mean=True, with_std=True).fit(R_fit)
+    Rz_fit = scaler.transform(R_fit)
+
+    n_pcs_eff = min(max(int(n_pcs), 1), Rz_fit.shape[0], Rz_fit.shape[1])
+    pca = PCA(n_components=n_pcs_eff).fit(Rz_fit)
+    Rp_fit = pca.inverse_transform(pca.transform(Rz_fit))
+    B = np.linalg.lstsq(X, Rp_fit, rcond=None)[0].T
+
+    if orth_method == "qr":
+        if B.shape[1] > B.shape[0]:
+            raise ValueError(
+                "orthogonalized TDR requires n_conditions <= n_units."
+            )
+        Q, _ = np.linalg.qr(B)
+        W_axes = Q
+    elif orth_method == "svd":
+        U, _, Vt = np.linalg.svd(B, full_matrices=False)
+        W_axes = U @ Vt
+    else:
+        W_axes = B
+
+    Z = np.empty((n_condition, W_axes.shape[1], n_time), dtype=float)
+    for ti in range(n_time):
+        Rz_t = scaler.transform(R[:, :, ti])
+        Rp_t = pca.inverse_transform(pca.transform(Rz_t))
+        Z[:, :, ti] = Rp_t @ W_axes
+
+    condition_coord = da_cond.coords["condition"]
+    projections = xr.DataArray(
+        Z,
+        dims=("condition", "component", time_dim),
+        coords={
+            "condition": condition_coord,
+            "component": np.arange(W_axes.shape[1]),
+            time_dim: da_cond.coords[time_dim],
+        },
+        name=da.name,
+        attrs=dict(da.attrs),
+    )
+    weights = xr.DataArray(
+        W_axes.T,
+        dims=("condition", dim),
+        coords={"condition": condition_coord, dim: da_cond.coords[dim]},
+        name="weights",
+    )
+    projections = preserve_coords(da_cond, projections)
+    return xr.Dataset({"projections": projections, "weights": weights})
 
 
 def _reduce_pca(

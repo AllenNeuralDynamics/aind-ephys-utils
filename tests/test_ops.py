@@ -533,6 +533,44 @@ class ReduceMethodsTest(unittest.TestCase):
             out["weights"].dims, ("marginal", "component", "unit")
         )
 
+    def test_reduce_tdr_from_trial_data(self) -> None:
+        """TDR on trial data should condition-average and return expected dims."""
+        da = self._make_reduce_data()
+        out = reduce(
+            da,
+            method="tdr",
+            dim="unit",
+            n_components=2,
+            labels="choice",
+        )
+        self.assertEqual(
+            out["projections"].dims, ("condition", "component", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("condition", "unit"))
+        self.assertEqual(out["projections"].sizes["condition"], 2)
+        self.assertEqual(out["weights"].sizes["condition"], 2)
+
+    def test_reduce_tdr_from_condition_data(self) -> None:
+        """TDR should accept condition x unit x time input directly."""
+        da = self._make_reduce_data().groupby("choice").mean("trial")
+        da = da.rename({"choice": "condition"})
+        out = reduce(
+            da,
+            method="tdr",
+            dim="unit",
+            n_components=2,
+        )
+        self.assertEqual(
+            out["projections"].dims, ("condition", "component", "time")
+        )
+        self.assertEqual(out["weights"].dims, ("condition", "unit"))
+
+    def test_reduce_tdr_trial_data_requires_labels(self) -> None:
+        """TDR on trial data should require labels for conditioning."""
+        da = self._make_reduce_data()
+        with self.assertRaisesRegex(ValueError, "labels are required"):
+            _ = reduce(da, method="tdr", dim="unit", n_components=2)
+
     def test_reduce_dpca_missing_condition_combinations_raises(self) -> None:
         """dPCA should fail when label combinations are incomplete."""
         da = self._make_reduce_data()
