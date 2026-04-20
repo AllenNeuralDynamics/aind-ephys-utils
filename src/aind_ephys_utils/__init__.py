@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Important: import accessors so @register_* runs at import time
 from . import accessors as _accessors  # noqa: E402,F401
