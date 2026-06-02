@@ -29,6 +29,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+numba = [
+    'numba>=0.59'
+]
 dev = [
     'polars',
     'black',
@@ -99,5 +102,6 @@ exclude = ["setup.py",
            "results",
            "data",
            "notebooks",
-           "scratch"]
+           "scratch",
+           "tests"]
 fail-under = 100
