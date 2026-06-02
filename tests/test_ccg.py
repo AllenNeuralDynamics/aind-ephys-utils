@@ -11,10 +11,22 @@ from aind_ephys_utils.metrics.ccg import (
     smooth_ccgs,
 )
 
+try:
+    import numba  # noqa: F401
+
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
+needs_numba = unittest.skipUnless(
+    HAS_NUMBA, "requires the numba optional extra"
+)
+
 
 class CCGTest(unittest.TestCase):
     """Tests for sparse CCG computation and post-processing."""
 
+    @needs_numba
     def test_between_sets_lag_convention(self) -> None:
         """C[i, j] histograms t_j - t_i, so a +delta lag is positive."""
         delta = 0.005
@@ -34,6 +46,7 @@ class CCGTest(unittest.TestCase):
         # Every one of the 9 source spikes contributes exactly one pair.
         self.assertEqual(int(C[0, 0].max()), a.size)
 
+    @needs_numba
     def test_allpairs_symmetry(self) -> None:
         """C[i, j](tau) must equal C[j, i](-tau)."""
         rng = np.random.default_rng(0)
@@ -48,6 +61,7 @@ class CCGTest(unittest.TestCase):
         self.assertEqual(C.shape, (2, 2, lags.size))
         np.testing.assert_array_almost_equal(C[0, 1], C[1, 0][::-1])
 
+    @needs_numba
     def test_allpairs_autocorr_zero_lag_excluded(self) -> None:
         """Zero-lag autocorr bin is blanked when requested."""
         rng = np.random.default_rng(1)
@@ -62,6 +76,7 @@ class CCGTest(unittest.TestCase):
         center = lags.size // 2
         self.assertEqual(C[0, 0, center], 0.0)
 
+    @needs_numba
     def test_corrcoef_normalization_is_finite(self) -> None:
         """corrcoef normalization returns finite correlation values."""
         rng = np.random.default_rng(2)

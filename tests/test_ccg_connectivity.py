@@ -16,6 +16,13 @@ from aind_ephys_utils.metrics.connectivity import (
     run_two_stage_mc,
 )
 
+try:
+    import numba  # noqa: F401
+
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
 
 class PairVecTest(unittest.TestCase):
     """Per-pair <-> (N, N) conversion."""
@@ -118,6 +125,7 @@ def _make_trial_segments(rng, n_units=4, n_trials=8, rate=20.0):
     return segs, starts
 
 
+@unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
 class SurrogateWorkflowTest(unittest.TestCase):
     """run_surrogates and run_two_stage_mc on a small real dataset."""
 
