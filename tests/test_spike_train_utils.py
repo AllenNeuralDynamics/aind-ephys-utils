@@ -19,6 +19,13 @@ from aind_ephys_utils.spiketrain.spike_utils import (
     near_events,
 )
 
+try:
+    import numba  # noqa: F401
+
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
 
 class EpochsTest(unittest.TestCase):
     """Tests for epoch-based spike manipulation."""
@@ -102,6 +109,7 @@ class SpikeUtilsTest(unittest.TestCase):
         np.testing.assert_array_almost_equal(trials[0], [0.3])
         np.testing.assert_array_almost_equal(trials[1], [-0.3])
 
+    @unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
     def test_synchrony_index_counts_distinct_units(self) -> None:
         """count_coincident_units counts distinct nearby other units."""
         trains = [
