@@ -29,6 +29,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+numba = [
+    'numba>=0.59'
+]
 dev = [
     'polars',
     'black',
