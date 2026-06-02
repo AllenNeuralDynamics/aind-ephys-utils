@@ -7,3 +7,6 @@ exclude =
     notebooks
 max-complexity = 10
 max-line-length = 90
+# E203 (whitespace before ':') is incompatible with black's slice
+# formatting; black's docs recommend disabling it.
+extend-ignore = E203
