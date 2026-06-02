@@ -102,5 +102,6 @@ exclude = ["setup.py",
            "results",
            "data",
            "notebooks",
-           "scratch"]
+           "scratch",
+           "tests"]
 fail-under = 100

@@ -2004,3 +2004,118 @@ def _apply_normalization(
         C /= avail[None, None, :]
     elif normalize != "none":
         raise ValueError(f"Unknown normalize mode: {normalize!r}")
+
+
+# ---------------------------------------------------------------------------
+# Per-pair <-> (N, N) conversion
+# ---------------------------------------------------------------------------
+
+
+def pair_vec_to_NN(
+    pair_values: np.ndarray,
+    pairs: np.ndarray,
+    n_units: int,
+    *,
+    fill: float = 0.0,
+    mirror: bool = True,
+    dtype: object = None,
+) -> np.ndarray:
+    """Scatter a per-pair vector into an ``(n_units, n_units)`` array.
+
+    The sparse per-pair representation used by the trial-paired /
+    surrogate CCG path (and by ``ccg_between_sets_sparse``) is projected
+    back into the dense ``(N, N)`` matrix that ``arr[i, j]`` lookups
+    expect.  Cells outside ``pairs`` (and their mirror, when
+    ``mirror=True``) hold ``fill``.
+
+    Parameters
+    ----------
+    pair_values
+        Per-pair values in the same row order as ``pairs``.
+    pairs
+        ``(n_pairs, 2)`` array of ``(i, j)`` unit-index pairs.
+    n_units
+        ``N`` — size of the square output.
+    fill
+        Value for cells not covered by ``pairs``.
+    mirror
+        If ``True``, also write each value at the transposed cell
+        ``(j, i)`` (symmetric fill).
+    dtype
+        Output dtype; defaults to ``pair_values.dtype``.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n_units, n_units)`` array.
+    """
+    if dtype is None:
+        dtype = pair_values.dtype
+    out = np.full((n_units, n_units), fill, dtype=dtype)
+    out[pairs[:, 0], pairs[:, 1]] = pair_values
+    if mirror:
+        out[pairs[:, 1], pairs[:, 0]] = pair_values
+    return out
+
+
+def NN_to_pair_vec(arr_NN: np.ndarray, pairs: np.ndarray) -> np.ndarray:
+    """Gather a per-pair vector from an ``(n_units, n_units)`` array.
+
+    Inverse of :func:`pair_vec_to_NN` (modulo ``fill`` cells outside the
+    pair set), for projecting an existing ``(N, N)`` array onto the
+    per-pair representation.
+
+    Parameters
+    ----------
+    arr_NN
+        ``(n_units, n_units)`` array.
+    pairs
+        ``(n_pairs, 2)`` array of ``(i, j)`` unit-index pairs.
+
+    Returns
+    -------
+    np.ndarray
+        Per-pair vector ``arr_NN[i, j]`` in ``pairs`` row order.
+    """
+    return arr_NN[pairs[:, 0], pairs[:, 1]]
+
+
+# ---------------------------------------------------------------------------
+# Surrogate trial pairings
+# ---------------------------------------------------------------------------
+
+
+def derangements(
+    n: int, count: int, rng: np.random.Generator
+) -> Iterator[np.ndarray]:
+    """Yield *count* derangements (permutations with no fixed points).
+
+    A derangement of ``range(n)`` maps no index to itself, so using one
+    to re-pair trials destroys cross-unit correlations while preserving
+    each unit's within-trial structure — the basis for trial-identity
+    surrogate testing (feed the yielded permutations to
+    :func:`ccg_trial_surrogates`).
+
+    Parameters
+    ----------
+    n
+        Number of trials (must be >= 2; no derangement exists for n < 2).
+    count
+        Number of derangements to yield.
+    rng
+        NumPy random generator.
+
+    Yields
+    ------
+    np.ndarray
+        A length-``n`` permutation with no fixed points.
+    """
+    if n < 2:
+        raise ValueError("derangements require n >= 2.")
+    identity = np.arange(n)
+    for _ in range(count):
+        while True:
+            p = rng.permutation(n)
+            if np.all(p != identity):
+                yield p
+                break
