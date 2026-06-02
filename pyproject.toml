@@ -46,6 +46,9 @@ license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"aind_ephys_utils.plots" = ["*.csv"]
+
 [tool.setuptools.dynamic]
 version = {attr = "aind_ephys_utils.__version__"}
 
@@ -99,5 +102,6 @@ exclude = ["setup.py",
            "results",
            "data",
            "notebooks",
-           "scratch"]
+           "scratch",
+           "tests"]
 fail-under = 100
