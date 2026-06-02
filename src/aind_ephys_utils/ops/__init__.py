@@ -12,6 +12,7 @@ from .pseudopop import pseudopop
 from .psth import psth
 from .reduce import reduce
 from .restrict import restrict
+from .sliding_psth import sliding_psth
 from .smooth import smooth
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "pseudopop",
     "reduce",
     "restrict",
+    "sliding_psth",
     "smooth",
 ]
