@@ -10,7 +10,15 @@ from aind_ephys_utils.metrics.ripley import (
     ripley_k_envelope,
 )
 
+try:
+    import numba  # noqa: F401
 
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
+
+@unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
 class RipleyTest(unittest.TestCase):
     """Tests for Ripley's K/L estimation on 1D point processes."""
 
