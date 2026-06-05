@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .ccg import (
     NN_to_pair_vec,
+    ccg,
     ccg_allpairs_sparse,
     ccg_between_sets_sparse,
     ccg_trial_paired,
@@ -31,6 +32,7 @@ from .latency import spike_latency
 __all__ = [
     "spike_latency",
     # ccg — main entry points
+    "ccg",
     "ccg_allpairs_sparse",
     "ccg_between_sets_sparse",
     "clip_spikes_to_trials",

@@ -15,10 +15,10 @@ So a peak at positive lag in ``C[i, j]`` is evidence that *i* → *j*
 ``C[j, i]`` is the time-reverse: ``C[j, i, k] == C[i, j, -k]``.
 
 The kernel uses left-closed bin assignment (``floor``) matching the convention
-in ``SpikeAnalysis.jl`` and ``np.histogram``.  The ``"corrcoef"``
-normalization mode subtracts edge-corrected expected counts and divides by
-``sqrt(auto_u * auto_v)`` to produce a proper correlation coefficient, also
-matching the Julia implementation.
+``np.histogram``.  The ``"corrcoef"`` normalization mode subtracts
+edge-corrected expected counts and divides by ``sqrt(auto_u * auto_v)`` to
+produce a proper correlation coefficient, matching the original Julia
+implementation of these functions.
 """
 
 from __future__ import annotations
@@ -29,10 +29,180 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
+import xarray as xr
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import peak_prominences, peak_widths
 
 from aind_ephys_utils._numba import njit, prange
+from aind_ephys_utils.standards.conventions import C
+from aind_ephys_utils.standards.validate import validate
+
+# ---------------------------------------------------------------------------
+# Xarray-compatible CCG interface
+# ---------------------------------------------------------------------------
+
+
+def ccg(  # noqa: C901
+    spikes: xr.DataArray,
+    *,
+    source_units: Iterable[Any] | None = None,
+    target_units: Iterable[Any] | None = None,
+    pairs: Iterable[tuple[Any, Any]] | np.ndarray | None = None,
+    pairing: np.ndarray | Iterable[int] | None = None,
+    window: tuple[float, float] | None = None,
+    bin_size: float = 0.001,
+    max_lag: float = 0.1,
+    normalize: str = "none",
+    exclude_zero_lag_autocorr: bool = True,
+    include_autocorr: bool = True,
+) -> tuple[np.ndarray, xr.DataArray]:
+    """Compute CCGs directly from a canonical ragged spikes DataArray.
+
+    Single-trial ragged spikes dispatch to the session-wide CCG helpers.
+    Multi-trial ragged spikes are packed internally and dispatched to the
+    trial-paired CCG helper. Unit selectors are resolved by coordinate label
+    when possible and by integer position otherwise.
+    """
+    spikes_ut = _normalize_ragged_spikes(spikes)
+    labels = _unit_labels(spikes_ut)
+    n_trials = spikes_ut.sizes[C.trial]
+    window_use = _resolve_window(spikes_ut, window)
+
+    if pairs is not None and (
+        source_units is not None or target_units is not None
+    ):
+        raise ValueError(
+            "Use either pairs or source_units/target_units, not both."
+        )
+
+    attrs = {
+        "ephys.metric": "ccg",
+        "bin_size": float(bin_size),
+        "max_lag": float(max_lag),
+        "normalize": normalize,
+        "window": window_use,
+    }
+
+    if pairs is not None:
+        pair_idx, pair_src_labels, pair_tgt_labels = _resolve_unit_pairs(
+            spikes_ut, pairs
+        )
+    else:
+        source_idx = _resolve_unit_indices(spikes_ut, source_units)
+        target_idx = _resolve_unit_indices(spikes_ut, target_units)
+        pair_idx = np.array(
+            [(i, j) for i in source_idx for j in target_idx],
+            dtype=np.int64,
+        )
+
+    selected = (
+        pairs is not None
+        or source_units is not None
+        or target_units is not None
+    )
+
+    if n_trials == 1:
+        if pairs is not None:
+            unique_src = np.unique(pair_idx[:, 0])
+            unique_tgt = np.unique(pair_idx[:, 1])
+            src_lookup = {int(idx): pos for pos, idx in enumerate(unique_src)}
+            tgt_lookup = {int(idx): pos for pos, idx in enumerate(unique_tgt)}
+            lags, dense = ccg_between_sets_sparse(
+                _spike_list_for_units(spikes_ut, unique_src),
+                _spike_list_for_units(spikes_ut, unique_tgt),
+                bin_size=bin_size,
+                max_lag=max_lag,
+                normalize=normalize,
+                observation_window=window_use,
+            )
+            out = np.zeros(
+                (pair_idx.shape[0], dense.shape[-1]), dtype=dense.dtype
+            )
+            for p, (i, j) in enumerate(pair_idx):
+                out[p] = dense[src_lookup[int(i)], tgt_lookup[int(j)]]
+            return lags, _wrap_pair_ccg(
+                out, lags, pair_src_labels, pair_tgt_labels, attrs
+            )
+
+        if not selected:
+            all_idx = np.arange(spikes_ut.sizes[C.unit])
+            lags, out = ccg_allpairs_sparse(
+                _spike_list_for_units(spikes_ut, all_idx),
+                bin_size=bin_size,
+                max_lag=max_lag,
+                normalize=normalize,
+                exclude_zero_lag_autocorr=exclude_zero_lag_autocorr,
+                include_autocorr=include_autocorr,
+                observation_window=window_use,
+            )
+            return lags, _wrap_dense_ccg(out, lags, labels, labels, attrs)
+
+        lags, out = ccg_between_sets_sparse(
+            _spike_list_for_units(spikes_ut, source_idx),
+            _spike_list_for_units(spikes_ut, target_idx),
+            bin_size=bin_size,
+            max_lag=max_lag,
+            normalize=normalize,
+            observation_window=window_use,
+        )
+        return lags, _wrap_dense_ccg(
+            out, lags, labels[source_idx], labels[target_idx], attrs
+        )
+
+    if pairing is None:
+        trial_pairing = np.arange(n_trials, dtype=np.int64)
+    else:
+        trial_pairing = np.asarray(list(pairing), dtype=np.int64)
+    if trial_pairing.shape != (n_trials,):
+        raise ValueError(
+            f"pairing must have shape ({n_trials},), got {trial_pairing.shape}."
+        )
+
+    trial_segments = _trial_segments_from_ragged_da(
+        spikes_ut, window=window_use
+    )
+
+    if pairs is not None:
+        lags, out = ccg_trial_paired(
+            trial_segments,
+            trial_pairing,
+            bin_size=bin_size,
+            max_lag=max_lag,
+            normalize=normalize,
+            exclude_zero_lag_autocorr=exclude_zero_lag_autocorr,
+            include_autocorr=include_autocorr,
+            pairs=pair_idx,
+        )
+        return lags, _wrap_pair_ccg(
+            out, lags, pair_src_labels, pair_tgt_labels, attrs
+        )
+
+    if not selected:
+        lags, out = ccg_trial_paired(
+            trial_segments,
+            trial_pairing,
+            bin_size=bin_size,
+            max_lag=max_lag,
+            normalize=normalize,
+            exclude_zero_lag_autocorr=exclude_zero_lag_autocorr,
+            include_autocorr=include_autocorr,
+        )
+        return lags, _wrap_dense_ccg(out, lags, labels, labels, attrs)
+
+    lags, out = ccg_trial_paired(
+        trial_segments,
+        trial_pairing,
+        bin_size=bin_size,
+        max_lag=max_lag,
+        normalize=normalize,
+        exclude_zero_lag_autocorr=exclude_zero_lag_autocorr,
+        include_autocorr=include_autocorr,
+        pairs=pair_idx,
+    )
+    return lags, _wrap_pair_ccg(
+        out, lags, labels[pair_idx[:, 0]], labels[pair_idx[:, 1]], attrs
+    )
+
 
 # ---------------------------------------------------------------------------
 # Core kernel
@@ -74,7 +244,8 @@ def _ccg_two_pointer_accum(t1, t2, max_lag, bin_size, nbins, out):
 
 
 # ---------------------------------------------------------------------------
-# Edge-corrected normalization helpers (ported from SpikeAnalysis.jl)
+# Edge-corrected normalization helpers (ported from SpikeAnalysis.jl by Galen
+# Lynch)
 #
 # The corrcoef normalization produces a unitless correlation coefficient in
 # [-1, 1] that is zero when the two spike trains are independent and
@@ -468,6 +639,191 @@ def ccg_allpairs_sparse(
         _apply_normalization(C, lags, normalize, T, S, bin_size)
 
     return lags, C
+
+
+def _coerce_spike_vector(x: object) -> np.ndarray:
+    """Coerce one ragged spike entry to a sorted 1D float array."""
+    if x is None:
+        return np.asarray([], dtype=np.float64)
+    arr = np.asarray(x, dtype=np.float64)
+    if arr.ndim != 1:
+        raise ValueError(f"Ragged spike entries must be 1D, got {arr.shape}.")
+    if arr.size and np.any(np.diff(arr) < 0):
+        raise ValueError(
+            "Spike times must be sorted within each ragged entry."
+        )
+    return arr
+
+
+def _normalize_ragged_spikes(spikes: xr.DataArray) -> xr.DataArray:
+    """Validate and transpose ragged spikes to (unit, trial)."""
+    if not isinstance(spikes, xr.DataArray):
+        raise TypeError("ccg expects an xarray.DataArray of ragged spikes.")
+    validate(spikes, kind="spikes_ragged")
+    return spikes.transpose(C.unit, C.trial)
+
+
+def _resolve_window(
+    spikes: xr.DataArray, window: tuple[float, float] | None
+) -> tuple[float, float]:
+    """Resolve a relative-time observation window."""
+    if window is not None:
+        left, right = window
+    else:
+        valid = spikes.attrs.get(C.attr_valid_intervals)
+        if valid:
+            left, right = valid[0]
+        else:
+            mins: list[float] = []
+            maxs: list[float] = []
+            for x in spikes.data.ravel():
+                arr = _coerce_spike_vector(x)
+                if arr.size:
+                    mins.append(float(arr.min()))
+                    maxs.append(float(arr.max()))
+            if not mins:
+                raise ValueError(
+                    "window is required when ragged spikes are empty and "
+                    "ephys.valid_intervals is absent."
+                )
+            left, right = min(mins), max(maxs)
+    left = float(left)
+    right = float(right)
+    if left >= right:
+        raise ValueError(
+            f"window must be (left, right) with left < right, got {window}."
+        )
+    return left, right
+
+
+def _unit_labels(spikes_ut: xr.DataArray) -> np.ndarray:
+    """Return unit coordinate labels."""
+    if C.unit in spikes_ut.coords:
+        return np.asarray(spikes_ut[C.unit].values)
+    return np.arange(spikes_ut.sizes[C.unit])
+
+
+def _resolve_unit_indices(
+    spikes_ut: xr.DataArray,
+    units: Iterable[Any] | None,
+) -> np.ndarray:
+    """Resolve unit selectors by coordinate label when possible, else position."""
+    labels = _unit_labels(spikes_ut)
+    if units is None:
+        return np.arange(spikes_ut.sizes[C.unit], dtype=np.int64)
+
+    resolved: list[int] = []
+    for unit in units:
+        matches = np.flatnonzero(labels == unit)
+        if matches.size:
+            resolved.append(int(matches[0]))
+            continue
+        if isinstance(unit, (int, np.integer)):
+            idx = int(unit)
+            if idx < 0 or idx >= spikes_ut.sizes[C.unit]:
+                raise IndexError(f"unit index {idx} is out of bounds.")
+            resolved.append(idx)
+            continue
+        raise KeyError(f"Could not find unit label {unit!r}.")
+    return np.asarray(resolved, dtype=np.int64)
+
+
+def _resolve_unit_pairs(
+    spikes_ut: xr.DataArray,
+    pairs: Iterable[tuple[Any, Any]] | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Resolve explicit unit pairs to integer positions and labels."""
+    labels = _unit_labels(spikes_ut)
+    pair_values = list(pairs)
+    pair_idx = np.empty((len(pair_values), 2), dtype=np.int64)
+    for p, (src, tgt) in enumerate(pair_values):
+        pair_idx[p, 0] = _resolve_unit_indices(spikes_ut, [src])[0]
+        pair_idx[p, 1] = _resolve_unit_indices(spikes_ut, [tgt])[0]
+    return pair_idx, labels[pair_idx[:, 0]], labels[pair_idx[:, 1]]
+
+
+def _spike_list_for_units(
+    spikes_ut: xr.DataArray,
+    unit_indices: np.ndarray,
+    trial_index: int = 0,
+) -> list[np.ndarray]:
+    """Extract one spike train per selected unit for one trial."""
+    return [
+        _coerce_spike_vector(spikes_ut.data[int(i), trial_index])
+        for i in unit_indices
+    ]
+
+
+def _trial_segments_from_ragged_da(
+    spikes_ut: xr.DataArray,
+    *,
+    window: tuple[float, float],
+) -> TrialSegments:
+    """Pack ragged (unit, trial) spikes into the current CCG kernel format."""
+    left, right = window
+    n_units = spikes_ut.sizes[C.unit]
+    n_trials = spikes_ut.sizes[C.trial]
+    segments: list[list[np.ndarray]] = []
+    for i in range(n_units):
+        unit_segments: list[np.ndarray] = []
+        for k in range(n_trials):
+            arr = _coerce_spike_vector(spikes_ut.data[i, k])
+            lo = np.searchsorted(arr, left, side="left")
+            hi = np.searchsorted(arr, right, side="left")
+            unit_segments.append(arr[lo:hi].astype(np.float64, copy=False))
+        segments.append(unit_segments)
+
+    all_spikes, offsets, counts = _build_csr(segments, n_units, n_trials)
+    durations = np.full(n_trials, right - left, dtype=np.float64)
+    pre = np.full(n_trials, -left, dtype=np.float64)
+    post = np.full(n_trials, right, dtype=np.float64)
+    return TrialSegments(
+        segments, durations, pre, post, all_spikes, offsets, counts
+    )
+
+
+def _wrap_dense_ccg(
+    values: np.ndarray,
+    lags: np.ndarray,
+    source_labels: np.ndarray,
+    target_labels: np.ndarray,
+    attrs: dict[str, Any],
+) -> xr.DataArray:
+    """Wrap dense source x target CCG output as xarray."""
+    return xr.DataArray(
+        values,
+        dims=("source_unit", "target_unit", "lag"),
+        coords={
+            "source_unit": source_labels,
+            "target_unit": target_labels,
+            "lag": lags,
+        },
+        attrs=attrs,
+        name="ccg",
+    )
+
+
+def _wrap_pair_ccg(
+    values: np.ndarray,
+    lags: np.ndarray,
+    source_labels: np.ndarray,
+    target_labels: np.ndarray,
+    attrs: dict[str, Any],
+) -> xr.DataArray:
+    """Wrap sparse pair x lag CCG output as xarray."""
+    n_pairs = values.shape[0]
+    return xr.DataArray(
+        values,
+        dims=("pair", "lag"),
+        coords={
+            "pair": np.arange(n_pairs),
+            "source_unit": ("pair", source_labels),
+            "target_unit": ("pair", target_labels),
+            "lag": lags,
+        },
+        attrs=attrs,
+        name="ccg",
+    )
 
 
 # ---------------------------------------------------------------------------
