@@ -44,6 +44,36 @@ class OpsTest(unittest.TestCase):
         np.testing.assert_array_equal(binned.values[0, 0], [1, 1])
         np.testing.assert_array_equal(binned.values[0, 1], [1, 0])
 
+    def test_bin_accepts_bin_size_alias(self) -> None:
+        """bin_size should be interchangeable with dt."""
+        data = np.empty((1, 1), dtype=object)
+        data[0, 0] = np.array([0.05, 0.15])
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        via_dt = bin(spikes, dt=0.1, window=(0.0, 0.2), output="count")
+        via_alias = bin(
+            spikes, bin_size=0.1, window=(0.0, 0.2), output="count"
+        )
+        xr.testing.assert_equal(via_alias, via_dt)
+
+    def test_bin_rejects_dt_and_bin_size(self) -> None:
+        """Only one bin-size alias may be supplied."""
+        data = np.empty((1, 1), dtype=object)
+        data[0, 0] = np.array([0.05])
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        with self.assertRaisesRegex(ValueError, "only one"):
+            bin(spikes, dt=0.1, bin_size=0.1, window=(0.0, 0.2))
+
+    def test_bin_auto(self) -> None:
+        """Automatic bin selection should produce a valid dense result."""
+        rng = np.random.default_rng(0)
+        data = np.empty((20, 1), dtype=object)
+        for trial in range(data.shape[0]):
+            data[trial, 0] = np.sort(rng.uniform(0.0, 1.0, size=20))
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        out = bin(spikes, dt="auto", window=(0.0, 1.0))
+        self.assertEqual(out.dims, ("trial", "unit", "time"))
+        self.assertGreater(out.sizes["time"], 1)
+
     def test_smooth_gaussian(self) -> None:
         """Smooth a 1D signal with a Gaussian kernel."""
         da = xr.DataArray(
@@ -109,6 +139,69 @@ class OpsTest(unittest.TestCase):
         )
         out = psth(da, dim="trial", method="mean")
         np.testing.assert_allclose(out.values, [2.0, 4.0])
+
+    def test_psth_bins_and_smooths_ragged_spikes(self) -> None:
+        """Ragged PSTH should compose bin, reduction, and boxcar smoothing."""
+        spikes = xr.DataArray(
+            np.array(
+                [
+                    [np.array([0.05, 0.15])],
+                    [np.array([0.05])],
+                ],
+                dtype=object,
+            ),
+            dims=("trial", "unit"),
+        )
+        out = psth(
+            spikes,
+            bin_size=0.1,
+            smooth_window=0.2,
+            window=(0.0, 0.3),
+        )
+        expected = smooth(
+            bin(spikes, dt=0.1, window=(0.0, 0.3)).mean(dim="trial"),
+            method="boxcar",
+            window=0.2,
+        )
+        xr.testing.assert_allclose(out, expected)
+
+    def test_psth_ragged_requires_bin_size(self) -> None:
+        """Ragged spikes need an explicit or automatic bin size."""
+        data = np.empty((1, 1), dtype=object)
+        data[0, 0] = np.array([0.05])
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        with self.assertRaisesRegex(ValueError, "requires bin_size"):
+            psth(spikes)
+
+    def test_psth_accepts_auto_bin_size(self) -> None:
+        """Ragged PSTH should support automatic bin-width selection."""
+        rng = np.random.default_rng(1)
+        data = np.empty((20, 1), dtype=object)
+        for trial in range(data.shape[0]):
+            data[trial, 0] = np.sort(rng.uniform(0.0, 1.0, size=20))
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        out = psth(spikes, bin_size="auto", window=(0.0, 1.0))
+        self.assertEqual(out.dims, ("unit", "time"))
+        self.assertGreater(out.sizes["time"], 1)
+
+    def test_psth_accessor_bins_and_smooths(self) -> None:
+        """The accessor should expose integrated binning and smoothing."""
+        data = np.empty((2, 1), dtype=object)
+        data[0, 0] = np.array([0.05])
+        data[1, 0] = np.array([0.15])
+        spikes = xr.DataArray(data, dims=("trial", "unit"))
+        via_op = psth(
+            spikes,
+            bin_size=0.1,
+            smooth_window=0.2,
+            window=(0.0, 0.3),
+        )
+        via_accessor = spikes.ephys.psth(
+            bin_size=0.1,
+            smooth_window=0.2,
+            window=(0.0, 0.3),
+        )
+        xr.testing.assert_allclose(via_accessor, via_op)
 
     def test_psth_group_by_mean(self) -> None:
         """Group by trial coord before averaging."""

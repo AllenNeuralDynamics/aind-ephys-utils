@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -15,15 +15,20 @@ from ._internal.utils import (
     preserve_coords,
     to_dataarray_input,
 )
+from .bin import BinSize, bin
+from .smooth import smooth
 
 
-def psth(
+def psth(  # noqa: C901
     data: DataInput,
     *,
     dim: str = C.trial,
     method: str = "mean",
     group_by: Optional[Union[str, Sequence[str]]] = None,
     keep_trials: bool = False,
+    bin_size: Optional[BinSize] = None,
+    smooth_window: Optional[float] = None,
+    window: Optional[Tuple[float, float]] = None,
     dims: Optional[Sequence[str]] = None,
     coords: Optional[Dict[str, object]] = None,
     return_type: str = "auto",
@@ -43,6 +48,13 @@ def psth(
         Optional coord name(s) to group along ``dim`` before reducing.
     keep_trials:
         If True, keep per-trial data along with the summary.
+    bin_size:
+        For ragged spikes, bin width in seconds or ``"auto"`` for
+        Shimazaki-Shinomoto optimal bin-width selection.
+    smooth_window:
+        Optional boxcar smoothing window in seconds, applied after reduction.
+    window:
+        Optional ``(tmin, tmax)`` window passed to ``bin`` for ragged input.
     dims:
         Optional dimension names used when ``data`` is a dense NumPy array.
     coords:
@@ -60,9 +72,29 @@ def psth(
     """
     da, input_kind = to_dataarray_input(data, dims=dims, coords=coords)
 
+    if bin_size is not None:
+        if da.dtype != object:
+            raise ValueError("bin_size is only supported for ragged spikes.")
+        da = bin(
+            da,
+            bin_size=bin_size,
+            window=window,
+            return_type="xarray",
+        )
+    elif da.dtype == object:
+        raise ValueError("psth requires bin_size for ragged spikes.")
+
     if dim not in da.dims:
+        summary = da.copy()
+        if smooth_window is not None:
+            summary = smooth(
+                summary,
+                method="boxcar",
+                window=smooth_window,
+                return_type="xarray",
+            )
         return from_dataarray_output(
-            da.copy(), input_kind=input_kind, return_type=return_type
+            summary, input_kind=input_kind, return_type=return_type
         )
 
     if not isinstance(method, str):
@@ -79,6 +111,13 @@ def psth(
     summary = _grouped_reduce(
         da, dim=dim, reduce=method_name, group_by=group_by
     )
+    if smooth_window is not None:
+        summary = smooth(
+            summary,
+            method="boxcar",
+            window=smooth_window,
+            return_type="xarray",
+        )
 
     if not keep_trials:
         summary.attrs = dict(da.attrs)

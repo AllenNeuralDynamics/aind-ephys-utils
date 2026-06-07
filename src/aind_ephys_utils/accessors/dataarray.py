@@ -142,17 +142,20 @@ class EphysDataArrayAccessor:
 
     def bin(
         self,
-        dt: float,
+        dt: Optional[Union[float, str]] = None,
         window: Optional[Tuple[float, float]] = None,
         output: str = "rate",
         time_unit: str = "s",
+        bin_size: Optional[Union[float, str]] = None,
     ) -> xr.DataArray:
         """Bin ragged spikes into a dense (trial, unit, time) representation.
 
         Parameters
         ----------
         dt:
-            Bin width in seconds.
+            Bin width in seconds or ``"auto"``.
+        bin_size:
+            Alias for ``dt``.
         output:
             Output type (e.g. "rate" or "count").
         time_unit:
@@ -168,7 +171,12 @@ class EphysDataArrayAccessor:
         Binning preserves compatible coordinates and updates ephys attrs.
         """
         return _bin(
-            self._obj, dt=dt, window=window, output=output, time_unit=time_unit
+            self._obj,
+            dt=dt,
+            bin_size=bin_size,
+            window=window,
+            output=output,
+            time_unit=time_unit,
         )
 
     def smooth(
@@ -231,6 +239,9 @@ class EphysDataArrayAccessor:
         method: str = "mean",
         group_by: Optional[Union[str, Sequence[str]]] = None,
         keep_trials: bool = False,
+        bin_size: Optional[Union[float, str]] = None,
+        smooth_window: Optional[float] = None,
+        window: Optional[Tuple[float, float]] = None,
     ) -> xr.DataArray:
         """Reduce across trials to compute a PSTH-style summary.
 
@@ -244,6 +255,9 @@ class EphysDataArrayAccessor:
             method=method,
             group_by=group_by,
             keep_trials=keep_trials,
+            bin_size=bin_size,
+            smooth_window=smooth_window,
+            window=window,
         )
 
     def reduce(self, *args: Any, **kwargs: Any) -> xr.DataArray:
