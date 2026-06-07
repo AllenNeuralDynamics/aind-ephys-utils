@@ -111,6 +111,10 @@ def _infer_dt(values: np.ndarray) -> float:
     return dt
 
 
+# A Gaussian truncated at ±3σ captures 99.7% of its mass; the window spans 6σ.
+_GAUSSIAN_WINDOW_SIGMAS = 6.0
+
+
 def _make_kernel(
     *,
     method: str,
@@ -124,9 +128,9 @@ def _make_kernel(
         if sigma is None and window is None:
             raise ValueError("gaussian smoothing requires sigma or window.")
         if sigma is None:
-            sigma = float(window) / 6.0
+            sigma = float(window) / _GAUSSIAN_WINDOW_SIGMAS
         if window is None:
-            window = 6.0 * float(sigma)
+            window = _GAUSSIAN_WINDOW_SIGMAS * float(sigma)
         sigma_bins = float(sigma) / dt
         if sigma_bins <= 0:
             return np.asarray([1.0])

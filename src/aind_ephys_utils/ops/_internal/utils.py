@@ -14,6 +14,15 @@ RaggedTrial = Sequence[Sequence[object]]
 DataInput = Union[xr.DataArray, np.ndarray, RaggedSession, RaggedTrial]
 
 
+def _safe_divide(
+    numerator: xr.DataArray,
+    scale: xr.DataArray,
+    nonzero: xr.DataArray,
+) -> xr.DataArray:
+    """Divide numerator by scale, returning 0 wherever scale is zero/NaN."""
+    return (numerator / scale.where(nonzero)).where(nonzero, 0.0)
+
+
 def preserve_coords(src: xr.DataArray, out: xr.DataArray) -> xr.DataArray:
     """
     Carry over coordinates whose dims are a subset of the output dims.

@@ -3,7 +3,7 @@ reduce
 
 Dimensionality reduction and supervised projections.
 
-The ``reduce`` operation supports seven methods:
+The ``reduce`` operation supports eight methods:
 
 - ``pca``
 - ``gpfa``
@@ -12,6 +12,7 @@ The ``reduce`` operation supports seven methods:
 - ``logistic``
 - ``lda``
 - ``rrr``
+- ``tdr``
 
 .. toctree::
    :maxdepth: 1
@@ -23,6 +24,7 @@ The ``reduce`` operation supports seven methods:
    logistic
    lda
    rrr
+   tdr
 
 Quick examples
 --------------

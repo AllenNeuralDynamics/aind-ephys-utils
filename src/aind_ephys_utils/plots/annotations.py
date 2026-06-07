@@ -163,18 +163,23 @@ def _as_intervals(
         yield float(start), float(end)
 
 
+def _resolve_labels(items, labels, make_key, kind: str) -> list[Optional[str]]:
+    """Resolve labels from a sequence or dict mapping, for events or intervals."""
+    if labels is None:
+        return [None] * len(items)
+    if isinstance(labels, dict):
+        return [labels.get(make_key(item)) for item in items]
+    if len(labels) != len(items):
+        raise ValueError(f"{kind}_labels must match the length of {kind}s.")
+    return list(labels)
+
+
 def _resolve_event_labels(
     events: np.ndarray,
     labels: Optional[Union[Sequence[str], Dict[float, str]]],
 ) -> list[Optional[str]]:
     """Resolve event labels from a sequence or mapping."""
-    if labels is None:
-        return [None] * len(events)
-    if isinstance(labels, dict):
-        return [labels.get(float(t)) for t in events]
-    if len(labels) != len(events):
-        raise ValueError("event_labels must match the length of events.")
-    return list(labels)
+    return _resolve_labels(events, labels, float, "event")
 
 
 def _resolve_interval_labels(
@@ -182,13 +187,9 @@ def _resolve_interval_labels(
     labels: Optional[Union[Sequence[str], Dict[Tuple[float, float], str]]],
 ) -> list[Optional[str]]:
     """Resolve interval labels from a sequence or mapping."""
-    if labels is None:
-        return [None] * len(intervals)
-    if isinstance(labels, dict):
-        return [labels.get((float(s), float(e))) for s, e in intervals]
-    if len(labels) != len(intervals):
-        raise ValueError("interval_labels must match the length of intervals.")
-    return list(labels)
+    return _resolve_labels(
+        intervals, labels, lambda iv: (float(iv[0]), float(iv[1])), "interval"
+    )
 
 
 def _draw_labels(

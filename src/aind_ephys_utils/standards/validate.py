@@ -74,8 +74,8 @@ def is_continuous(da: xr.DataArray) -> bool:
         return False
     # Allow integer/float/bool; exclude strings/objects
     try:
-        np.asarray(da.data).dtype.kind  # may raise in weird cases
-    except Exception:
+        np.asarray(da.data).dtype.kind
+    except (TypeError, AttributeError):
         return False
     return True
 

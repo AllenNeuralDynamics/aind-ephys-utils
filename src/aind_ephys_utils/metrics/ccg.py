@@ -34,6 +34,11 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import peak_prominences, peak_widths
 
 from aind_ephys_utils._numba import njit, prange
+
+try:
+    from numba.typed import List as TypedList
+except ImportError:
+    TypedList = list  # type: ignore[misc,assignment]
 from aind_ephys_utils.standards.conventions import C
 from aind_ephys_utils.standards.validate import validate
 
@@ -441,6 +446,10 @@ def ccg_between_sets_sparse(  # noqa: C901
     S1 = [s.astype(np.float64) for s in spike_times_set1]
     S2 = [s.astype(np.float64) for s in spike_times_set2]
 
+    # Convert to Numba typed lists to avoid reflected list deprecation
+    S1_typed = TypedList(S1)
+    S2_typed = TypedList(S2)
+
     pair_list = np.array(
         [(i, j) for i in range(M) for j in range(N)], dtype=np.int64
     )
@@ -459,7 +468,9 @@ def ccg_between_sets_sparse(  # noqa: C901
                 S1[i], S2[j], max_lag, bin_size, nbins
             )
 
-    _compute_pairs(pair_list, S1, S2, half, bin_size, max_lag, out_buf)
+    _compute_pairs(
+        pair_list, S1_typed, S2_typed, half, bin_size, max_lag, out_buf
+    )
 
     if normalize == "corrcoef":
         ec_shape = _expected_counts_shape(B, bin_size, T)
@@ -597,6 +608,9 @@ def ccg_allpairs_sparse(
 
     S = [s.astype(np.float64) for s in spike_times_by_unit]
 
+    # Convert to Numba typed list to avoid reflected list deprecation
+    S_typed = TypedList(S)
+
     pair_list = []
     for i in range(N):
         j_start = i if include_autocorr else i + 1
@@ -619,7 +633,7 @@ def ccg_allpairs_sparse(
                 S[i], S[j], max_lag, bin_size, nbins
             )
 
-    _compute_pairs(pair_list_arr, S, half, bin_size, max_lag, out_buf)
+    _compute_pairs(pair_list_arr, S_typed, half, bin_size, max_lag, out_buf)
 
     C = _scatter_and_normalize(
         out_buf,
