@@ -21,7 +21,6 @@ from ..ops.normalize import normalize as _normalize
 from ..ops.psth import psth as _psth
 from ..ops.reduce import reduce as _reduce
 from ..ops.restrict import restrict as _restrict
-from ..ops.sliding_psth import sliding_psth as _sliding_psth
 from ..ops.smooth import smooth as _smooth
 from ..plots.psth import psth as _plot_psth
 from ..plots.raster import raster as _plot_raster
@@ -69,7 +68,6 @@ class EphysDataArrayAccessor:
       - da.ephys.validate()
       - da.ephys.align(events, to, window)
       - da.ephys.bin(...)
-      - da.ephys.sliding_psth(...)
       - da.ephys.smooth(...)
       - da.ephys.baseline(...)
       - da.ephys.normalize(...)
@@ -91,7 +89,6 @@ class EphysDataArrayAccessor:
             "  - da.ephys.validate()\n"
             "  - da.ephys.align(events, to='go_cue', window=(-0.5, 1.0))\n"
             "  - da.ephys.bin(dt=0.01, output='rate')\n"
-            "  - da.ephys.sliding_psth(window_size=0.05, bin_size=0.01)\n"
             "  - da.ephys.smooth(method='gaussian', sigma=0.02)\n"
             "  - da.ephys.baseline(window=(-0.2, 0.0), mode='subtract')\n"
             "  - da.ephys.normalize(dim='trial', method='zscore')\n"
@@ -145,17 +142,20 @@ class EphysDataArrayAccessor:
 
     def bin(
         self,
-        dt: float,
+        dt: Optional[Union[float, str]] = None,
         window: Optional[Tuple[float, float]] = None,
         output: str = "rate",
         time_unit: str = "s",
+        bin_size: Optional[Union[float, str]] = None,
     ) -> xr.DataArray:
         """Bin ragged spikes into a dense (trial, unit, time) representation.
 
         Parameters
         ----------
         dt:
-            Bin width in seconds.
+            Bin width in seconds or ``"auto"``.
+        bin_size:
+            Alias for ``dt``.
         output:
             Output type (e.g. "rate" or "count").
         time_unit:
@@ -171,49 +171,11 @@ class EphysDataArrayAccessor:
         Binning preserves compatible coordinates and updates ephys attrs.
         """
         return _bin(
-            self._obj, dt=dt, window=window, output=output, time_unit=time_unit
-        )
-
-    def sliding_psth(
-        self,
-        *,
-        window_size: float,
-        bin_size: float = 0.001,
-        window: Optional[Tuple[float, float]] = None,
-        causal: bool = False,
-        time_unit: str = "s",
-    ) -> xr.DataArray:
-        """Sliding-window firing-rate PSTH from ragged spikes.
-
-        Parameters
-        ----------
-        window_size:
-            Sliding window width in seconds.
-        bin_size:
-            Underlying fine bin width in seconds.
-        window:
-            Optional (tmin, tmax) time range; inferred if omitted.
-        causal:
-            If True, use a causal (trailing) window.
-        time_unit:
-            Unit for time values.
-
-        Returns
-        -------
-        xr.DataArray
-            Firing-rate PSTH with a ``time`` dimension.
-
-        Notes
-        -----
-        Overlapping-window estimate; the disjoint-bin alternative is
-        ``bin(output="rate")`` optionally followed by ``smooth()``.
-        """
-        return _sliding_psth(
             self._obj,
-            window_size=window_size,
+            dt=dt,
             bin_size=bin_size,
             window=window,
-            causal=causal,
+            output=output,
             time_unit=time_unit,
         )
 
@@ -277,6 +239,9 @@ class EphysDataArrayAccessor:
         method: str = "mean",
         group_by: Optional[Union[str, Sequence[str]]] = None,
         keep_trials: bool = False,
+        bin_size: Optional[Union[float, str]] = None,
+        smooth_window: Optional[float] = None,
+        window: Optional[Tuple[float, float]] = None,
     ) -> xr.DataArray:
         """Reduce across trials to compute a PSTH-style summary.
 
@@ -290,6 +255,9 @@ class EphysDataArrayAccessor:
             method=method,
             group_by=group_by,
             keep_trials=keep_trials,
+            bin_size=bin_size,
+            smooth_window=smooth_window,
+            window=window,
         )
 
     def reduce(self, *args: Any, **kwargs: Any) -> xr.DataArray:
