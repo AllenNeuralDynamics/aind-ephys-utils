@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
-from numpy.typing import NDArray
 import xarray as xr
+from numpy.typing import NDArray
 
 from ..standards.conventions import C
 from ._internal.utils import (

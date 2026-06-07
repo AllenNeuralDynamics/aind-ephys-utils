@@ -303,7 +303,7 @@ def _plot_raster_on_axis(  # noqa: C901
                 seq = [
                     (
                         s[
-                            np.searchsorted(s, tmin): np.searchsorted(
+                            np.searchsorted(s, tmin) : np.searchsorted(
                                 s, tmax, "right"
                             )
                         ]
