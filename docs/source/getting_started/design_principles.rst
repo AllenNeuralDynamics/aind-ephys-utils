@@ -17,6 +17,7 @@ Package layers
 - ``standards``: conventions and validation of shapes/metadata
 - ``ops``: pure, composable operations (no plotting, no I/O)
 - ``plots``: code for visualization
+- ``helpers``: general utilities and bundled reference data
 - ``metrics``: (coming soon)
 
 Data model assumptions

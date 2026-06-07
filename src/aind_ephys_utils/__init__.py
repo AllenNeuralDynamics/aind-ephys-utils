@@ -7,7 +7,7 @@ __version__ = "0.1.2"
 # Important: import accessors so @register_* runs at import time
 from . import accessors as _accessors  # noqa: E402,F401
 from . import align  # noqa: E402,F401
-from . import ccf  # noqa: E402,F401
+from . import helpers  # noqa: E402,F401
 from .adapters import from_dataframe  # noqa: E402,F401
 from .config import configure_defaults  # noqa: E402,F401
 from .ops.pseudopop import pseudopop  # noqa: E402,F401

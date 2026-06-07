@@ -20,16 +20,13 @@ from pathlib import Path
 
 import pandas as pd
 
-# The Allen structure tree ships with the package.  It currently lives
-# next to the plotting colour helper that also reads it; both share this
-# single CSV rather than duplicating it.
-_DEFAULT_CCF_CSV = Path(__file__).parent / "plots" / "allen_structure_tree.csv"
+from . import ALLEN_STRUCTURE_TREE_PATH
 
 
 @lru_cache(maxsize=1)
 def _load_default_ccf() -> pd.DataFrame:
     """Load the bundled Allen 2017 structure tree as a DataFrame."""
-    return pd.read_csv(_DEFAULT_CCF_CSV)
+    return pd.read_csv(ALLEN_STRUCTURE_TREE_PATH)
 
 
 def _as_ccf_df(ccf_df: pd.DataFrame | str | Path | None) -> pd.DataFrame:

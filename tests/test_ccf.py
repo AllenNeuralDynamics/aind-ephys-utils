@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from aind_ephys_utils.ccf import (
+from aind_ephys_utils.helpers.ccf import (
     get_descendant_acronyms,
     get_descendant_ids,
     order_regions_by_ccf,
