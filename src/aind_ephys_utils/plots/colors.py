@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import csv
 from functools import lru_cache
-from pathlib import Path
 from typing import Dict, Tuple, Union
 
-_CSV_PATH = Path(__file__).with_name("allen_structure_tree.csv")
+from ..helpers import ALLEN_STRUCTURE_TREE_PATH
 
 
 def get_color_for_region(region: Union[int, str]) -> str:
@@ -51,7 +50,9 @@ def _load_allen_tree() -> (
     ids: Dict[int, str] = {}
     names: Dict[str, str] = {}
     acronyms: Dict[str, str] = {}
-    with _CSV_PATH.open(newline="", encoding="utf-8") as handle:
+    with ALLEN_STRUCTURE_TREE_PATH.open(
+        newline="", encoding="utf-8"
+    ) as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             color = (row.get("color_hex_triplet") or "").strip()

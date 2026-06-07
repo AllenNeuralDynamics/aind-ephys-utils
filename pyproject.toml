@@ -49,6 +49,9 @@ license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"aind_ephys_utils.helpers" = ["*.csv"]
+
 [tool.setuptools.dynamic]
 version = {attr = "aind_ephys_utils.__version__"}
 
