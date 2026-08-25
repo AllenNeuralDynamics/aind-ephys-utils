@@ -108,8 +108,12 @@ def ccg(  # noqa: C901
             src_lookup = {int(idx): pos for pos, idx in enumerate(unique_src)}
             tgt_lookup = {int(idx): pos for pos, idx in enumerate(unique_tgt)}
             lags, dense = ccg_between_sets_sparse(
-                _spike_list_for_units(spikes_ut, unique_src),
-                _spike_list_for_units(spikes_ut, unique_tgt),
+                _spike_list_for_units(
+                    spikes_ut, unique_src, window=window_use
+                ),
+                _spike_list_for_units(
+                    spikes_ut, unique_tgt, window=window_use
+                ),
                 bin_size=bin_size,
                 max_lag=max_lag,
                 normalize=normalize,
@@ -127,7 +131,7 @@ def ccg(  # noqa: C901
         if not selected:
             all_idx = np.arange(spikes_ut.sizes[C.unit])
             lags, out = ccg_allpairs_sparse(
-                _spike_list_for_units(spikes_ut, all_idx),
+                _spike_list_for_units(spikes_ut, all_idx, window=window_use),
                 bin_size=bin_size,
                 max_lag=max_lag,
                 normalize=normalize,
@@ -138,8 +142,8 @@ def ccg(  # noqa: C901
             return lags, _wrap_dense_ccg(out, lags, labels, labels, attrs)
 
         lags, out = ccg_between_sets_sparse(
-            _spike_list_for_units(spikes_ut, source_idx),
-            _spike_list_for_units(spikes_ut, target_idx),
+            _spike_list_for_units(spikes_ut, source_idx, window=window_use),
+            _spike_list_for_units(spikes_ut, target_idx, window=window_use),
             bin_size=bin_size,
             max_lag=max_lag,
             normalize=normalize,
@@ -210,23 +214,27 @@ def ccg(  # noqa: C901
 
 
 @njit(cache=True, fastmath=False)
-def _ccg_two_pointer(t1, t2, max_lag, bin_size, nbins):
+def _ccg_two_pointer(t1, t2, bin_size, nbins):
     """Numba-accelerated two-pointer cross-correlogram kernel.
 
     Uses left-closed bins: bin *k* covers ``[k*bin_size - bin_size/2,
     k*bin_size + bin_size/2)`` relative to zero lag.
     """
     h = np.zeros(nbins, dtype=np.int64)
-    _ccg_two_pointer_accum(t1, t2, max_lag, bin_size, nbins, h)
+    _ccg_two_pointer_accum(t1, t2, bin_size, nbins, h)
     return h
 
 
 @njit(cache=True, fastmath=True)
-def _ccg_two_pointer_accum(t1, t2, max_lag, bin_size, nbins, out):
+def _ccg_two_pointer_accum(t1, t2, bin_size, nbins, out):
     """Accumulate cross-correlogram counts into *out* (no allocation)."""
     half = nbins // 2
     inv = 1.0 / bin_size
-    window_margin = max_lag + 0.5 * bin_size
+    # Derived from the bins actually returned, not from max_lag: when
+    # max_lag / bin_size is not an integer, half rounds up and the outer bin
+    # extends past max_lag + bin_size/2, so that bound would end the sweep
+    # early and undercount the outermost bins.
+    window_margin = (half + 0.5) * bin_size
 
     j_start = 0
     n2 = t2.size
@@ -385,6 +393,113 @@ def _expected_counts_shape(
     return shape
 
 
+# Two supports count as matching within this many seconds.  Far below any
+# spike-time resolution (30 kHz sampling is 33 us) and far above float64
+# rounding on session-scale timestamps, so it admits arithmetic noise without
+# admitting a real mismatch.
+_SUPPORT_ATOL = 1e-9
+
+
+def _is_involution(pairing: np.ndarray) -> bool:
+    """True when ``sigma == sigma^-1``, i.e. ``sigma(sigma(k)) == k``.
+
+    The dense mirror ``C[j, i] = reverse(C[i, j])`` and the diagonal's
+    ``0.5 * (h + reverse(h))`` both compute ``h^{sigma^-1}`` where they mean
+    ``h^sigma``; they agree only for an involution.  The identity is the case
+    that made this look correct.
+    """
+    return bool(np.array_equal(pairing[pairing], np.arange(pairing.size)))
+
+
+def _validate_pairing_support(
+    ts: "TrialSegments", pairing: np.ndarray
+) -> None:
+    """Require each paired trial to share the partner trial's support.
+
+    Different pairs may have different support; the two members of one pair
+    may not.  Under this contract each pair's overlap equals its own support,
+    so the overlap clip is a no-op and every trial's exposure is fixed by that
+    trial alone -- which is what makes summed exposure invariant across
+    pairings, and therefore raw-count surrogate comparison valid.
+
+    Support equality is the condition, not duration equality: ``(-0.2, 0.8)``
+    and ``(-0.8, 0.2)`` both last 1 s and share only 0.4 s.
+    """
+    bad = ~(
+        np.isclose(ts.pre, ts.pre[pairing], rtol=0.0, atol=_SUPPORT_ATOL)
+        & np.isclose(ts.post, ts.post[pairing], rtol=0.0, atol=_SUPPORT_ATOL)
+    )
+    if not bad.any():
+        return
+    k = int(np.flatnonzero(bad)[0])
+    partner = int(pairing[k])
+    raise ValueError(
+        f"Paired trials must share the same alignment-relative support: "
+        f"trial {k} spans ({-ts.pre[k]}, {ts.post[k]}) but its partner "
+        f"{partner} spans ({-ts.pre[partner]}, {ts.post[partner]}). "
+        f"{int(bad.sum())} of {bad.size} trials violate this. "
+        "Call clip_to_window first to put every trial on a common support."
+    )
+
+
+def _uniform_support(ts: "TrialSegments") -> bool:
+    """True when every trial spans the same alignment-relative interval.
+
+    Clipping each pair to its trials' overlap is a no-op only under this
+    condition.  Equal *durations* are not enough: ``(-0.2, 0.8)`` and
+    ``(-0.8, 0.2)`` both last 1 s but overlap in only 0.4 s, so a pairing
+    that maps one onto the other must clip.
+    """
+    return bool(np.all(ts.pre == ts.pre[0]) and np.all(ts.post == ts.post[0]))
+
+
+_TRIAL_NORMALIZE_MODES = frozenset({"none", "corrcoef"})
+
+
+def _validate_trial_normalize(normalize: str) -> None:
+    """Reject normalizations the trial-paired paths do not implement.
+
+    The session-wide modes (``counts``/``rate``/``conditional``/``unbiased``)
+    assume one global duration and are not defined per trial pairing; they
+    previously fell through and returned raw counts.
+    """
+    if normalize not in _TRIAL_NORMALIZE_MODES:
+        raise ValueError(
+            f"Unknown or unsupported normalize mode for the trial-paired "
+            f"path: {normalize!r}. Supported: "
+            f"{sorted(_TRIAL_NORMALIZE_MODES)}."
+        )
+
+
+def _validate_binning(bin_size: float, max_lag: float) -> None:
+    """Reject bin geometries that make the lag index undefined."""
+    if not np.isfinite(bin_size) or bin_size <= 0:
+        raise ValueError(
+            f"bin_size must be positive and finite, got {bin_size!r}."
+        )
+    if not np.isfinite(max_lag) or max_lag < 0:
+        raise ValueError(
+            f"max_lag must be non-negative and finite, got {max_lag!r}."
+        )
+
+
+def _validate_spike_trains(trains: list[np.ndarray]) -> None:
+    """Require sorted, finite spike times.
+
+    Unsorted input breaks the two-pointer sweep's monotonicity assumption and
+    non-finite times propagate into the bin index as a silent miscount rather
+    than an error.
+    """
+    for train in trains:
+        s = np.asarray(train)
+        if s.size == 0:
+            continue
+        if not np.all(np.isfinite(s)):
+            raise ValueError("Spike times must be finite.")
+        if np.any(np.diff(s) < 0):
+            raise ValueError("Spike times must be sorted.")
+
+
 # ---------------------------------------------------------------------------
 # Between-set CCG
 # ---------------------------------------------------------------------------
@@ -426,9 +541,8 @@ def ccg_between_sets_sparse(  # noqa: C901
     M = len(spike_times_set1)
     N = len(spike_times_set2)
 
-    for s in spike_times_set1 + spike_times_set2:
-        if s.size and np.any(np.diff(s) < 0):
-            raise ValueError("Spike times must be sorted.")
+    _validate_binning(bin_size, max_lag)
+    _validate_spike_trains(spike_times_set1 + spike_times_set2)
 
     T = _resolve_observation_window(
         observation_window, spike_times_set1 + spike_times_set2
@@ -447,7 +561,7 @@ def ccg_between_sets_sparse(  # noqa: C901
     out_buf = np.zeros((pair_list.shape[0], B), dtype=np.float64)
 
     @njit(parallel=True, cache=True, fastmath=False)
-    def _compute_pairs(pair_idx, S1, S2, half, bin_size, max_lag, out_buf):
+    def _compute_pairs(pair_idx, S1, S2, half, bin_size, out_buf):
         """Numba kernel: accumulate CCGs for a chunk of set1×set2 pairs."""
         nbins = 2 * half + 1
         for k in prange(pair_idx.shape[0]):
@@ -455,11 +569,9 @@ def ccg_between_sets_sparse(  # noqa: C901
             j = pair_idx[k, 1]
             if S1[i].size == 0 or S2[j].size == 0:
                 continue
-            out_buf[k, :] = _ccg_two_pointer(
-                S1[i], S2[j], max_lag, bin_size, nbins
-            )
+            out_buf[k, :] = _ccg_two_pointer(S1[i], S2[j], bin_size, nbins)
 
-    _compute_pairs(pair_list, S1, S2, half, bin_size, max_lag, out_buf)
+    _compute_pairs(pair_list, S1, S2, half, bin_size, out_buf)
 
     if normalize == "corrcoef":
         ec_shape = _expected_counts_shape(B, bin_size, T)
@@ -531,19 +643,21 @@ def _scatter_and_normalize(
                 h = out_buf[p, :] - ec_shape * nspikes[i] * nspikes[j]
             else:
                 h = out_buf[p, :].astype(np.float32)
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
-
             if use_corrcoef and auto_terms is not None:
                 denom = np.sqrt(abs(auto_terms[i] * auto_terms[j]))
                 if denom > 0:
                     h = h / denom
 
+            # After normalization, matching the trial paths: one meaning,
+            # one place.
+            if i == j and exclude_zero_lag_autocorr:
+                h[half] = 0.0
+
             C[i, j, :] = h
             if i != j:
+                # No trial pairing here, so sigma is the identity and the
+                # mirror is exact.  The diagonal is already symmetric.
                 C[j, i, :] = h[::-1]
-            else:
-                C[i, i, :] = 0.5 * (h + h[::-1])
             p += 1
 
     return C
@@ -585,9 +699,8 @@ def ccg_allpairs_sparse(
         ``C[i,j](τ) = C[j,i](-τ)``
     """
     N = len(spike_times_by_unit)
-    for s in spike_times_by_unit:
-        if s.size and np.any(np.diff(s) < 0):
-            raise ValueError("Spike times must be sorted.")
+    _validate_binning(bin_size, max_lag)
+    _validate_spike_trains(spike_times_by_unit)
 
     T = _resolve_observation_window(observation_window, spike_times_by_unit)
 
@@ -607,7 +720,7 @@ def ccg_allpairs_sparse(
     out_buf = np.zeros((pair_list_arr.shape[0], B), dtype=np.float64)
 
     @njit(parallel=True, cache=True, fastmath=False)
-    def _compute_pairs(pair_idx, S, half, bin_size, max_lag, out_buf):
+    def _compute_pairs(pair_idx, S, half, bin_size, out_buf):
         """Numba kernel: accumulate CCGs for a chunk of all-pairs."""
         nbins = 2 * half + 1
         for k in prange(pair_idx.shape[0]):
@@ -615,11 +728,9 @@ def ccg_allpairs_sparse(
             j = pair_idx[k, 1]
             if S[i].size == 0 or S[j].size == 0:
                 continue
-            out_buf[k, :] = _ccg_two_pointer(
-                S[i], S[j], max_lag, bin_size, nbins
-            )
+            out_buf[k, :] = _ccg_two_pointer(S[i], S[j], bin_size, nbins)
 
-    _compute_pairs(pair_list_arr, S, half, bin_size, max_lag, out_buf)
+    _compute_pairs(pair_list_arr, S, half, bin_size, out_buf)
 
     C = _scatter_and_normalize(
         out_buf,
@@ -746,12 +857,22 @@ def _spike_list_for_units(
     spikes_ut: xr.DataArray,
     unit_indices: np.ndarray,
     trial_index: int = 0,
+    window: tuple[float, float] | None = None,
 ) -> list[np.ndarray]:
-    """Extract one spike train per selected unit for one trial."""
-    return [
+    """Extract one spike train per selected unit for one trial.
+
+    *window* is applied here rather than left to the observation-duration
+    argument downstream: the sparse kernels use it only to size the edge
+    correction, so spikes outside it would otherwise still be counted.
+    """
+    trains = [
         _coerce_spike_vector(spikes_ut.data[int(i), trial_index])
         for i in unit_indices
     ]
+    if window is None:
+        return trains
+    left, right = window
+    return [s[(s >= left) & (s < right)] for s in trains]
 
 
 def _trial_segments_from_ragged_da(
@@ -859,18 +980,6 @@ def rescale_ccgs(
     return (C - minv) / rng
 
 
-def rescale_ccgs_zero_mean(
-    C: np.ndarray, axis: int = -1, eps: float = 1e-12
-) -> np.ndarray:
-    """Rescale correlograms: subtract mean, then min-max to [0, 1]."""
-    meanv = C.mean(axis=axis, keepdims=True)
-    C_centered = C - meanv
-    minv = C_centered.min(axis=axis, keepdims=True)
-    maxv = C_centered.max(axis=axis, keepdims=True)
-    rng = np.maximum(maxv - minv, eps)
-    return (C_centered - minv) / rng
-
-
 # ---------------------------------------------------------------------------
 # Trial-structured CCG
 # ---------------------------------------------------------------------------
@@ -898,21 +1007,29 @@ def _ccg_all_pairs_trials(
     overlap_right,
     pair_list,
     pairing,
-    max_lag,
     bin_size,
     nbins,
     out_hist,
-    out_nspikes_i,
-    out_nspikes_j,
     out_dur,
     skip_clipping,
 ):
     """Numba kernel: all pairs × all trials, prange over pairs.
 
     When *skip_clipping* is True, segments are used as-is (no searchsorted).
-    Use this after ``clip_to_window`` when all trials have equal duration.
+    Valid only when every trial shares the same alignment-relative support,
+    so each pair's overlap equals that support.
     """
     n_trials = overlap_left.shape[0]
+    # Every valid overlap contributes its duration to every pair -- silence
+    # is a valid rate=0 observation -- so the total is pair-independent.
+    total_od = 0.0
+    for k in range(n_trials):
+        od = overlap_right[k] - overlap_left[k]
+        if od > 0.0:
+            total_od += od
+    for p in range(pair_list.shape[0]):
+        out_dur[p] = total_od
+
     for p in prange(pair_list.shape[0]):
         i = pair_list[p, 0]
         j = pair_list[p, 1]
@@ -943,18 +1060,9 @@ def _ccg_all_pairs_trials(
                 nj = hi_j - lo_j
                 si = si[lo_i:hi_i]
                 sj = sj[lo_j:hi_j]
-            # Duration accumulates for every valid overlap, even if one
-            # unit is silent — silence is a valid rate=0 observation.
-            out_dur[p] += od
             if ni == 0 or nj == 0:
                 continue
-            # Spike counts only from trials that contribute to the
-            # histogram, consistent with the expected-count formula.
-            _ccg_two_pointer_accum(
-                si, sj, max_lag, bin_size, nbins, out_hist[p, :]
-            )
-            out_nspikes_i[p] += ni
-            out_nspikes_j[p] += nj
+            _ccg_two_pointer_accum(si, sj, bin_size, nbins, out_hist[p, :])
 
 
 @njit(parallel=True, cache=True)
@@ -1091,6 +1199,7 @@ def clip_spikes_to_trials(
         ``(n_trials,)`` alignment times (t=0 in the output).
         Defaults to trial starts (left edge).
     """
+    _validate_spike_trains(list(spike_times_by_unit))
     trial_epochs = np.asarray(trial_epochs, dtype=np.float64)
     starts = trial_epochs[:, 0]
     stops = trial_epochs[:, 1]
@@ -1144,9 +1253,21 @@ def clip_to_window(
         All trials have the same effective duration ``right - left``.
     """
     left, right = window
+    if right <= left:
+        raise ValueError(f"window must satisfy left < right, got {window!r}.")
     N = len(ts.segments)
     n_trials = len(ts.durations)
     new_dur = right - left
+
+    # Re-slicing cannot recover spikes an earlier clip already dropped, so a
+    # window wider than any trial's support would claim exposure that was
+    # never observed.
+    if left < -ts.pre.min() or right > ts.post.min():
+        raise ValueError(
+            f"window {window!r} exceeds the common support "
+            f"({-ts.pre.min()}, {ts.post.min()}); clip_to_window can only "
+            "narrow."
+        )
 
     # Re-slice the existing CSR — no new spike array needed
     new_offsets = np.empty_like(ts.offsets)
@@ -1189,28 +1310,33 @@ class _CCGBuffers:
     __slots__ = (
         "pair_arr",
         "out_hist",
-        "out_nspikes_i",
-        "out_nspikes_j",
         "out_dur",
         "auto_per_trial",
     )
 
     def __init__(
-        self, n_pairs: int, nbins: int, n_units: int, n_trials: int
+        self,
+        n_pairs: int,
+        nbins: int,
+        n_units: int,
+        n_trials: int,
+        need_auto: bool = True,
     ) -> None:
-        """Allocate reusable output buffers for trial-paired CCGs."""
+        """Allocate reusable output buffers for trial-paired CCGs.
+
+        *need_auto* is false for every normalization but ``corrcoef``, which
+        is the only consumer of the per-trial auto terms.
+        """
         self.pair_arr: np.ndarray | None = None
         self.out_hist = np.zeros((n_pairs, nbins), dtype=np.int64)
-        self.out_nspikes_i = np.zeros(n_pairs, dtype=np.int64)
-        self.out_nspikes_j = np.zeros(n_pairs, dtype=np.int64)
         self.out_dur = np.zeros(n_pairs, dtype=np.float64)
-        self.auto_per_trial = np.zeros((n_units, n_trials), dtype=np.float64)
+        self.auto_per_trial = np.zeros(
+            (n_units, n_trials) if need_auto else (0, 0), dtype=np.float64
+        )
 
     def zero(self) -> None:
         """Reset all buffers to zero (avoids reallocation)."""
         self.out_hist[:] = 0
-        self.out_nspikes_i[:] = 0
-        self.out_nspikes_j[:] = 0
         self.out_dur[:] = 0
         self.auto_per_trial[:] = 0
 
@@ -1221,6 +1347,7 @@ class _CCGBuffers:
         max_lag: float,
         include_autocorr: bool = True,
         pairs: np.ndarray | None = None,
+        need_auto: bool = True,
     ) -> _CCGBuffers:
         """Create buffers sized for the given segments and parameters.
 
@@ -1229,6 +1356,9 @@ class _CCGBuffers:
         pairs
             Optional ``(n_pairs, 2)`` int64 array of ``(i, j)`` unit index
             pairs.  If ``None``, all upper-triangle pairs are used.
+        need_auto
+            Allocate the per-trial auto-term buffer.  Only ``corrcoef``
+            reads it.
         """
         N = len(ts.segments)
         n_trials = len(ts.durations)
@@ -1247,7 +1377,7 @@ class _CCGBuffers:
                 if pair_list
                 else np.empty((0, 2), dtype=np.int64)
             )
-        bufs = _CCGBuffers(pair_arr.shape[0], B, N, n_trials)
+        bufs = _CCGBuffers(pair_arr.shape[0], B, N, n_trials, need_auto)
         bufs.pair_arr = pair_arr
         return bufs
 
@@ -1357,6 +1487,8 @@ def ccg_trial_paired(  # noqa: C901
     count (rather than 1) matches the cross-correlation context: the
     denominator must normalize the two-sided cross-histogram at lag 0.
     """
+    _validate_binning(bin_size, max_lag)
+    _validate_trial_normalize(normalize)
     ts = trial_segments
     N = len(ts.segments)
     half = int(round(max_lag / bin_size))
@@ -1364,14 +1496,22 @@ def ccg_trial_paired(  # noqa: C901
     lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
 
     pairing = np.asarray(pairing, dtype=np.int64)
+    _validate_pairing_support(ts, pairing)
+    involutive = _is_involution(pairing)
 
-    # Overlap window per trial
+    # Overlap window per trial.  A no-op under the support contract; kept so
+    # the kernel's clipped and unclipped branches stay interchangeable.
     overlap_left = np.maximum(-ts.pre, -ts.pre[pairing])
     overlap_right = np.minimum(ts.post, ts.post[pairing])
 
     # Use pre-allocated buffers or create new ones
     if buffers is not None:
         bufs = buffers
+        if normalize == "corrcoef" and bufs.auto_per_trial.size == 0:
+            raise ValueError(
+                "buffers were built with need_auto=False and cannot serve "
+                'normalize="corrcoef".'
+            )
         bufs.zero()
     else:
         bufs = _CCGBuffers.for_segments(
@@ -1380,14 +1520,16 @@ def ccg_trial_paired(  # noqa: C901
             max_lag,
             include_autocorr,
             pairs=pairs,
+            need_auto=(normalize == "corrcoef"),
         )
 
     pair_arr = bufs.pair_arr
     assert pair_arr is not None
     n_pairs = pair_arr.shape[0]
 
-    # Skip clipping when all trials have uniform duration (e.g., after clip_to_window)
-    skip_clipping = bool(np.all(ts.durations == ts.durations[0]))
+    # Skip clipping only when every trial shares the same support, so each
+    # pair's overlap equals that support (e.g., after clip_to_window).
+    skip_clipping = _uniform_support(ts)
 
     # Single numba call: all pairs × all trials
     if n_pairs > 0:
@@ -1399,12 +1541,9 @@ def ccg_trial_paired(  # noqa: C901
             overlap_right,
             pair_arr,
             pairing,
-            max_lag,
             bin_size,
             B,
             bufs.out_hist,
-            bufs.out_nspikes_i,
-            bufs.out_nspikes_j,
             bufs.out_dur,
             skip_clipping,
         )
@@ -1511,8 +1650,6 @@ def ccg_trial_paired(  # noqa: C901
             if total_dur <= 0:
                 continue
             h = bufs.out_hist[p, :].astype(np.float64)
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
             if use_corrcoef:
                 if skip_clipping:
                     h -= ec_shape_single * cross_per_pair[p]
@@ -1524,11 +1661,11 @@ def ccg_trial_paired(  # noqa: C901
                 denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
                 if denom > 0:
                     h /= denom
-            # Autocorr (i == j) gets the symmetrised treatment matching
-            # the dense path's diagonal cell.  Cross-pairs store h
-            # directly; callers wanting the (j, i) CCG can reverse h.
-            if i == j:
-                h = 0.5 * (h + h[::-1])
+            # Blank after normalization, not before: subtracting the
+            # expected count from an already-zeroed bin left -E/denom here
+            # while the session path returned 0.
+            if i == j and exclude_zero_lag_autocorr:
+                h[half] = 0.0
             C[p, :] = h
     else:
         C = np.zeros((N, N, B), dtype=np.float64)
@@ -1538,8 +1675,6 @@ def ccg_trial_paired(  # noqa: C901
             if total_dur <= 0:
                 continue
             h = bufs.out_hist[p, :].astype(np.float64)
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
             if use_corrcoef:
                 if skip_clipping:
                     h -= ec_shape_single * cross_per_pair[p]
@@ -1551,11 +1686,13 @@ def ccg_trial_paired(  # noqa: C901
                 denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
                 if denom > 0:
                     h /= denom
+            if i == j and exclude_zero_lag_autocorr:
+                h[half] = 0.0
             C[i, j, :] = h
             if i != j:
-                C[j, i, :] = h[::-1]
-            else:
-                C[i, i, :] = 0.5 * (h + h[::-1])
+                # reverse(h) is h^{sigma^-1}, not h^sigma; only an
+                # involution makes the two coincide.
+                C[j, i, :] = h[::-1] if involutive else np.nan
 
     return lags, C
 
@@ -1616,20 +1753,32 @@ def ccg_trial_surrogates(  # noqa: C901
         mirrored; reverse ``C[p, :]`` to obtain the ``(j, i)`` CCG
         from a ``(i, j)`` row.
     """
+    _validate_binning(bin_size, max_lag)
+    _validate_trial_normalize(normalize)
     ts = trial_segments
     N = len(ts.segments)
     half = int(round(max_lag / bin_size))
     B = 2 * half + 1
     lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
-    skip_clipping = bool(np.all(ts.durations == ts.durations[0]))
+    skip_clipping = _uniform_support(ts)
     use_corrcoef = normalize == "corrcoef"
 
     n_trials_seg = len(ts.durations)
     bufs_a = _CCGBuffers.for_segments(
-        ts, bin_size, max_lag, include_autocorr, pairs=pairs
+        ts,
+        bin_size,
+        max_lag,
+        include_autocorr,
+        pairs=pairs,
+        need_auto=use_corrcoef,
     )
     bufs_b = _CCGBuffers.for_segments(
-        ts, bin_size, max_lag, include_autocorr, pairs=pairs
+        ts,
+        bin_size,
+        max_lag,
+        include_autocorr,
+        pairs=pairs,
+        need_auto=use_corrcoef,
     )
 
     # Precompute normalization constants for corrcoef
@@ -1707,12 +1856,9 @@ def ccg_trial_surrogates(  # noqa: C901
             orr,
             bufs.pair_arr,
             pairing,
-            max_lag,
             bin_size,
             B,
             bufs.out_hist,
-            bufs.out_nspikes_i,
-            bufs.out_nspikes_j,
             bufs.out_dur,
             skip_clipping,
         )
@@ -1738,6 +1884,7 @@ def ccg_trial_surrogates(  # noqa: C901
         pair_arr = bufs.pair_arr
         assert pair_arr is not None
         n_pairs = pair_arr.shape[0]
+        involutive = _is_involution(pairing)
 
         if use_corrcoef:
             if uniform_fast:
@@ -1826,8 +1973,6 @@ def ccg_trial_surrogates(  # noqa: C901
                 if total_dur <= 0:
                     continue
                 h = bufs.out_hist[p, :].astype(np.float64)
-                if i == j and exclude_zero_lag_autocorr:
-                    h[half] = 0.0
                 if use_corrcoef:
                     if uniform_fast:
                         h -= uniform_ec * cross_per_pair[p]
@@ -1839,14 +1984,8 @@ def ccg_trial_surrogates(  # noqa: C901
                     denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
                     if denom > 0:
                         h /= denom
-                # Autocorrs (i==j) get the symmetrised (h + h[::-1]) / 2
-                # treatment to match the dense path's behaviour at that
-                # diagonal cell.  Cross-pairs just store h directly;
-                # callers wanting the lower-triangle mirror can reverse
-                # h themselves at index p (since h[::-1] is the (j, i)
-                # CCG by definition of the cross-correlation).
-                if i == j:
-                    h = 0.5 * (h + h[::-1])
+                if i == j and exclude_zero_lag_autocorr:
+                    h[half] = 0.0
                 C[p, :] = h
         else:
             C = np.zeros((N, N, B), dtype=np.float64)
@@ -1856,8 +1995,6 @@ def ccg_trial_surrogates(  # noqa: C901
                 if total_dur <= 0:
                     continue
                 h = bufs.out_hist[p, :].astype(np.float64)
-                if i == j and exclude_zero_lag_autocorr:
-                    h[half] = 0.0
                 if use_corrcoef:
                     if uniform_fast:
                         h -= uniform_ec * cross_per_pair[p]
@@ -1869,17 +2006,18 @@ def ccg_trial_surrogates(  # noqa: C901
                     denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
                     if denom > 0:
                         h /= denom
+                if i == j and exclude_zero_lag_autocorr:
+                    h[half] = 0.0
                 C[i, j, :] = h
                 if i != j:
-                    C[j, i, :] = h[::-1]
-                else:
-                    C[i, i, :] = 0.5 * (h + h[::-1])
+                    C[j, i, :] = h[::-1] if involutive else np.nan
 
         return reduce(lags, C) if reduce is not None else C
 
     # Pipeline — overlap bounds are constant when durations are uniform
     def _overlap_for(pairing: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return per-pair overlap bounds for a trial pairing."""
+        _validate_pairing_support(ts, pairing)
         if skip_clipping:
             return uniform_ol, uniform_orr
         return (
