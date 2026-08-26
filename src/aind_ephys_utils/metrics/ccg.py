@@ -1714,6 +1714,25 @@ def legacy_auto_normalized(
     return res
 
 
+def _window_weights(
+    lags: np.ndarray, bin_size: float, window: tuple[float, float] | None
+) -> np.ndarray | None:
+    """Fraction of each lag bin lying inside *window*, or ``None`` for all.
+
+    Every bin spans ``bin_size``, centred on its lag -- the centre bin
+    included, which is why a window edge at zero splits it in half rather
+    than falling between bins.
+    """
+    if window is None:
+        return None
+    low, high = window
+    if not high > low:
+        raise ValueError(f"window must satisfy low < high, got {window!r}.")
+    half = bin_size / 2
+    overlap = np.minimum(lags + half, high) - np.maximum(lags - half, low)
+    return np.clip(overlap, 0.0, None) / bin_size
+
+
 def directional_excess(
     counts: CCGCounts, window: tuple[float, float] | None = None
 ) -> np.ndarray:
@@ -1728,31 +1747,31 @@ def directional_excess(
     *window* is a ``(low, high)`` lag interval, half-open on the right, and
     defaults to every lag.  Positive lags are the ``i -> j`` direction.
 
-    A one-sided window that includes the centre bin mixes directions: that
-    bin spans both lag signs, so it carries ``j -> i`` coincidences as well.
-    Where the reverse direction has real structure that biases the result.
-    Where it does not, it costs variance rather than accuracy -- and that
-    variance grows with the bin width, since the centre bin stays one bin
-    wide however coarse the binning gets.  Start the window at one bin
-    width to keep it out.
+    Bins straddling a window edge are weighted by the fraction of their lag
+    span that falls inside it, so *window* means the same interval at every
+    bin width instead of snapping to whichever bin edges happen to exist.
+    A window starting at zero therefore takes exactly half the centre bin,
+    which is the right answer twice over: that bin spans ``[-w/2, +w/2)``,
+    and its exposure is even in lag, so half of it is genuinely the
+    ``i -> j`` side.
+
+    What binning cannot do is resolve direction *within* a bin.  Half the
+    centre bin is the neutral split, exact for the symmetric zero-lag
+    synchrony that dominates that band, and it understates a true coupling
+    whose delay is shorter than ``bin_size / 2``.  Resolving that needs a
+    finer bin, not a different weighting.
     """
     if counts.n_spikes is None:
         raise ValueError(
             "directional_excess needs `n_spikes`; this result was built "
             "without observation metadata."
         )
-    sel = slice(None)
-    if window is not None:
-        low, high = window
-        if not high > low:
-            raise ValueError(
-                f"window must satisfy low < high, got {window!r}."
-            )
-        sel = (counts.lags >= low) & (counts.lags < high)
+    weights = _window_weights(counts.lags, counts.bin_size, window)
     n_i = counts.n_spikes[counts.pairs[:, 0]].astype(np.float64)
     totals = np.empty(counts.n_pairs, dtype=np.float64)
     for p in range(counts.n_pairs):
-        totals[p] = (counts.counts[p] - counts.expected_row(p))[sel].sum()
+        row = counts.counts[p] - counts.expected_row(p)
+        totals[p] = row.sum() if weights is None else float(row @ weights)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.asarray(totals / n_i)
 

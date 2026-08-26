@@ -29,6 +29,7 @@ from aind_ephys_utils.metrics.ccg import (
     compute_ccg_counts,
     covariance_density,
     cross_intensity,
+    _window_weights,
     directional_excess,
     legacy_auto_normalized,
     normalized_covariance,
@@ -857,9 +858,10 @@ class TransformTest(unittest.TestCase):
         # The plan's acceptance test 8.  A peak height is a density and
         # moves with the bin width; an integrated count ratio does not.
         # Averaged over seeds: a single draw carries enough sampling noise
-        # (the centre bin alone has sd ~0.014 at the coarsest binning) to
-        # swamp the invariance being tested.
-        window = (0.002, 0.02)
+        # to swamp the invariance being tested.  The window starts at zero
+        # because edge bins are weighted by overlap, so it means the same
+        # lag interval at every bin width.
+        window = (0.0, 0.02)
         values = []
         for bin_size in [0.0005, 0.001, 0.002, 0.004]:
             per_seed = []
@@ -987,6 +989,54 @@ class TransformTest(unittest.TestCase):
             ts, pairing, bin_size=0.002, max_lag=0.02, pairs=pairs
         )
         np.testing.assert_array_equal(direct, legacy_auto_normalized(counts))
+
+
+class WindowWeightTest(unittest.TestCase):
+    """Window edges cut bins by overlap instead of snapping to bin edges."""
+
+    @staticmethod
+    def _lags(bin_size=0.002, half=5):
+        return (np.arange(2 * half + 1) - half) * bin_size
+
+    def test_zero_edge_takes_exactly_half_the_centre_bin(self):
+        # The centre bin spans [-w/2, +w/2) and its exposure is even in
+        # lag, so half of it is exactly the i -> j side.  Not an
+        # approximation, and not a reason to drop the bin.
+        bin_size = 0.002
+        lags = self._lags(bin_size)
+        w = _window_weights(lags, bin_size, (0.0, 0.02))
+        self.assertEqual(w[len(lags) // 2], 0.5)
+
+    def test_weights_are_one_inside_and_zero_outside(self):
+        bin_size = 0.002
+        lags = self._lags(bin_size)
+        w = _window_weights(lags, bin_size, (0.003, 0.007))
+        # Bin centred at 0.004 lies wholly inside [0.003, 0.007).
+        self.assertEqual(w[lags.tolist().index(0.004)], 1.0)
+        self.assertEqual(w[lags.tolist().index(-0.004)], 0.0)
+
+    def test_the_edge_moves_the_weight_continuously(self):
+        # The smell being fixed: with bin selection, nudging the window
+        # edge across a bin boundary jumps the result by a whole bin.
+        bin_size = 0.002
+        lags = self._lags(bin_size)
+        totals = [
+            _window_weights(lags, bin_size, (edge, 0.01)).sum()
+            for edge in np.linspace(-0.004, 0.004, 41)
+        ]
+        steps = np.abs(np.diff(totals))
+        self.assertLess(steps.max(), 0.15)
+        self.assertAlmostEqual(totals[0] - totals[-1], 4.0, places=6)
+
+    def test_full_window_matches_no_window(self):
+        bin_size = 0.002
+        lags = self._lags(bin_size)
+        w = _window_weights(lags, bin_size, (lags[0] - 1.0, lags[-1] + 1.0))
+        np.testing.assert_allclose(w, 1.0, rtol=1e-12)
+
+    def test_backwards_window_raises(self):
+        with self.assertRaisesRegex(ValueError, "low < high"):
+            _window_weights(self._lags(), 0.002, (0.01, 0.001))
 
 
 if __name__ == "__main__":
