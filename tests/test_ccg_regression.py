@@ -19,6 +19,8 @@ import xarray as xr
 from aind_ephys_utils.metrics.ccg import (
     TrialSegments,
     _build_csr,
+    _expected_counts_shape,
+    _lag_exposure,
     ccg,
     ccg_between_sets_sparse,
     ccg_trial_paired,
@@ -671,6 +673,66 @@ class InputValidationTest(unittest.TestCase):
         out = clip_to_window(ts, (-0.2, 0.2))
         np.testing.assert_array_equal(out.counts, np.array([[1, 1]]))
         np.testing.assert_allclose(out.durations, [0.4, 0.4])
+
+
+class LagExposureTest(unittest.TestCase):
+    """``Q_b`` is the lag-band area of the trial square.
+
+    The implementation reaches it in closed form.  These derive it by
+    quadrature instead, so a change to the closed form has to survive an
+    independent derivation rather than a restatement of itself.
+    """
+
+    @staticmethod
+    def _band_area(lo: float, hi: float, dur: float) -> float:
+        """Integrate the lag density over ``[lo, hi)`` numerically."""
+        # Over ``[0, dur]**2`` the lag delta has unnormalized density
+        # ``dur - |delta|``.  Put a node exactly on the kink at 0 so the
+        # trapezoid rule is exact on each linear piece.
+        nodes = np.linspace(lo, hi, 100001)
+        if lo < 0.0 < hi:
+            nodes = np.unique(np.concatenate([nodes, [0.0]]))
+        trapz = getattr(np, "trapezoid", None) or np.trapz
+        return float(trapz(np.maximum(dur - np.abs(nodes), 0.0), nodes))
+
+    def test_exposure_matches_numerical_integration(self):
+        for bin_size, max_lag, dur in [
+            (0.001, 0.01, 1.0),
+            (0.05, 0.0031, 2.0),
+            (0.002, 0.02, 0.4),
+        ]:
+            nbins = 2 * int(np.ceil(max_lag / bin_size)) + 1
+            half = nbins // 2
+            halfbin = bin_size / 2
+            Q = _lag_exposure(nbins, bin_size, dur)
+            with self.subTest(bin_size=bin_size, dur=dur):
+                # Centre bin spans both lag signs.
+                self.assertAlmostEqual(
+                    Q[half],
+                    self._band_area(-halfbin, halfbin, dur),
+                    delta=1e-9 * dur**2,
+                )
+                for k in range(1, half + 1):
+                    stop = halfbin + k * bin_size
+                    area = self._band_area(stop - bin_size, stop, dur)
+                    self.assertAlmostEqual(
+                        Q[half + k], area, delta=1e-9 * dur**2
+                    )
+                    # Exposure is symmetric in lag sign.
+                    self.assertEqual(Q[half - k], Q[half + k])
+
+    def test_shape_is_exposure_over_duration_squared(self):
+        Q = _lag_exposure(21, 0.002, 0.75)
+        np.testing.assert_array_equal(
+            _expected_counts_shape(21, 0.002, 0.75), Q / 0.75**2
+        )
+
+    def test_exposure_shrinks_with_lag(self):
+        # Edge correction: bins further from zero lag have less of the
+        # trial square available to them, so exposure decreases.
+        Q = _lag_exposure(21, 0.002, 0.5)
+        side = Q[11:]
+        self.assertTrue(np.all(np.diff(side) < 0))
 
 
 if __name__ == "__main__":

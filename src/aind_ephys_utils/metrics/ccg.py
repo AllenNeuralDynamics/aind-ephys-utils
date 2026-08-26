@@ -368,29 +368,46 @@ def _corrected_auto_counts(
     )
 
 
-def _expected_counts_shape(
-    nbins: int, bin_size: float, dur: float
-) -> np.ndarray:
-    """Precompute the per-bin edge-correction shape (independent of spike counts).
+def _lag_geometry(
+    nbins: int, bin_size: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-bin lag geometry: far edge, width, and centre-bin scale.
 
-    Returns a vector of length *nbins* such that the expected count for bin *k*
-    given spike counts ``nu, nv`` is ``shape[k] * nu * nv``.
-    This is factored out of ``_subtract_expected_counts_symm`` so it can be
-    computed once and reused across all pairs.
+    The centre bin collects coincidences of both lag signs, so it is half as
+    wide as a side bin and counted twice.
     """
     n_sidebins = (nbins - 1) // 2
     halfbin = bin_size / 2
-    dur2 = dur**2
+    binstops = halfbin + np.abs(np.arange(nbins) - n_sidebins) * bin_size
+    bin_widths = np.full(nbins, bin_size, dtype=np.float64)
+    bin_widths[n_sidebins] = halfbin
+    center_scale = np.ones(nbins, dtype=np.float64)
+    center_scale[n_sidebins] = 2.0
+    return binstops, bin_widths, center_scale
 
-    shape = np.empty(nbins, dtype=np.float64)
-    # Center bin uses halfbin as both binstop and bin_size
-    shape[n_sidebins] = 2 * (halfbin * (dur - halfbin + halfbin / 2)) / dur2
-    for i in range(1, n_sidebins + 1):
-        binstop = halfbin + i * bin_size
-        e = (bin_size * (dur - binstop + bin_size / 2)) / dur2
-        shape[n_sidebins + i] = e
-        shape[n_sidebins - i] = e
-    return shape
+
+def _lag_exposure(nbins: int, bin_size: float, dur: float) -> np.ndarray:
+    """Lag exposure ``Q_b`` over a trial of length *dur*, in time squared.
+
+    ``Q_b`` is the area of the band of ``[0, dur]**2`` whose lag falls in bin
+    *b* -- the triangle (edge) correction before any division by ``dur**2``.
+    Naming it separately from that division is what lets trials of differing
+    duration share one geometry.
+    """
+    binstops, bin_widths, center_scale = _lag_geometry(nbins, bin_size)
+    return center_scale * bin_widths * (dur - binstops + bin_widths / 2)
+
+
+def _expected_counts_shape(
+    nbins: int, bin_size: float, dur: float
+) -> np.ndarray:
+    """Per-bin expected-count shape ``Q_b / dur**2``.
+
+    The expected count for bin *k* given spike counts ``nu, nv`` is
+    ``shape[k] * nu * nv``.  Independent of the spike counts, so it is
+    computed once per duration and reused across all pairs.
+    """
+    return _lag_exposure(nbins, bin_size, dur) / dur**2
 
 
 # Two supports count as matching within this many seconds.  Far below any
@@ -1566,22 +1583,6 @@ def ccg_trial_paired(  # noqa: C901
         auto_sum_direct = auto_masked.sum(axis=1)
         auto_sum_paired = auto_masked[:, pairing].sum(axis=1)
 
-    # Precompute binstop array for expected-count calculation (constant across pairs)
-    if use_corrcoef:
-        n_sidebins = (B - 1) // 2
-        halfbin = bin_size / 2
-        binstops = np.empty(B, dtype=np.float64)
-        binstops[n_sidebins] = halfbin  # center bin
-        for ib in range(1, n_sidebins + 1):
-            binstops[n_sidebins + ib] = halfbin + ib * bin_size
-            binstops[n_sidebins - ib] = halfbin + ib * bin_size
-        # Center bin uses halfbin as bin_size; side bins use bin_size
-        bin_widths = np.full(B, bin_size, dtype=np.float64)
-        bin_widths[n_sidebins] = halfbin
-        # Scale factor: center bin has factor 2 (symmetric)
-        center_scale = np.ones(B, dtype=np.float64)
-        center_scale[n_sidebins] = 2.0
-
     # Per-trial expected counts: sum_k ec_shape(d_k) * n_i(k) * n_j(σ(k))
     # Edge correction is a within-trial boundary effect, so must use the
     # per-trial duration and spike counts, not totals.  When durations are
@@ -1594,13 +1595,7 @@ def ccg_trial_paired(  # noqa: C901
         if skip_clipping:
             # Uniform durations: ec_shape factors out, precompute once
             d_uniform = float(overlap_durs[0])
-            d2 = d_uniform * d_uniform
-            ec_shape_single = (
-                center_scale
-                * bin_widths
-                * (d_uniform - binstops + bin_widths / 2)
-                / d2
-            )
+            ec_shape_single = _expected_counts_shape(B, bin_size, d_uniform)
             # When ``pairs`` is set, only compute the cross-products
             # we'll actually read.  Avoids the int64 non-BLAS matmul
             # (~70 ms at N=499) and the unnecessary N²-cell materialise
@@ -1621,22 +1616,24 @@ def ccg_trial_paired(  # noqa: C901
                 )
                 cross_per_pair = cm_full[pair_arr[:, 0], pair_arr[:, 1]]
         else:
-            # Non-uniform: precompute per-trial ec shapes, weighted by duration
-            # ec_weighted[k] = ec_shape(d_k) as a (n_trials, B) array
+            # Non-uniform: ec_weighted[k] = ec_shape(d_k), a (n_trials, B)
+            # array.  Exposure enters only through the overlap duration, and
+            # matched supports make durations repeat, so build one shape per
+            # distinct duration rather than one per trial.
             n_tr = trial_counts.shape[1]
             valid = overlap_durs > 0
             ec_weighted = np.zeros((n_tr, B), dtype=np.float64)
-            for k in range(n_tr):
-                if not valid[k]:
-                    continue
-                d_k = overlap_durs[k]
-                d2 = d_k * d_k
-                ec_weighted[k, :] = (
-                    center_scale
-                    * bin_widths
-                    * (d_k - binstops + bin_widths / 2)
-                    / d2
+            uniq_d, inverse = np.unique(
+                overlap_durs[valid], return_inverse=True
+            )
+            if uniq_d.size:
+                shapes = np.stack(
+                    [
+                        _expected_counts_shape(B, bin_size, float(d))
+                        for d in uniq_d
+                    ]
                 )
+                ec_weighted[valid, :] = shapes[inverse]
 
     # When ``pairs`` is provided, allocate only the per-pair output.
     # Skipping the (N, N, B) materialisation is a 2 GB saving at
@@ -1781,20 +1778,6 @@ def ccg_trial_surrogates(  # noqa: C901
         need_auto=use_corrcoef,
     )
 
-    # Precompute normalization constants for corrcoef
-    if use_corrcoef:
-        n_sidebins = (B - 1) // 2
-        halfbin = bin_size / 2
-        binstops = np.empty(B, dtype=np.float64)
-        binstops[n_sidebins] = halfbin
-        for ib in range(1, n_sidebins + 1):
-            binstops[n_sidebins + ib] = halfbin + ib * bin_size
-            binstops[n_sidebins - ib] = halfbin + ib * bin_size
-        bin_widths = np.full(B, bin_size, dtype=np.float64)
-        bin_widths[n_sidebins] = halfbin
-        center_scale = np.ones(B, dtype=np.float64)
-        center_scale[n_sidebins] = 2.0
-
     # --- Fast path for uniform durations ---
     # When all trials have equal duration (after clip_to_window), overlap
     # bounds and auto terms are identical across all pairings.  Precompute
@@ -1831,14 +1814,8 @@ def ccg_trial_surrogates(  # noqa: C901
         # Per-trial expected-count shape: ec_shape(d) is constant when
         # all trials have equal duration d.  The scatter loop multiplies
         # this by sum_k n_i(k)*n_j(σ(k)) per pair.
-        uniform_d = ts.post[0] + ts.pre[0]
-        d2 = uniform_d * uniform_d
-        uniform_ec: np.ndarray = (
-            center_scale
-            * bin_widths
-            * (uniform_d - binstops + bin_widths / 2)
-            / d2
-        )
+        uniform_d = float(ts.post[0] + ts.pre[0])
+        uniform_ec: np.ndarray = _expected_counts_shape(B, bin_size, uniform_d)
 
     def _launch_kernel(
         bufs: _CCGBuffers,
@@ -1937,21 +1914,21 @@ def ccg_trial_surrogates(  # noqa: C901
                     )
                     cross_per_pair = cm_full[pair_arr[:, 0], pair_arr[:, 1]]
             else:
-                # Non-uniform: precompute per-trial ec shapes
+                # Non-uniform: one shape per distinct overlap duration.
                 n_tr = trial_counts.shape[1]
                 valid = overlap_durs > 0
                 ec_weighted = np.zeros((n_tr, B), dtype=np.float64)
-                for k in range(n_tr):
-                    if not valid[k]:
-                        continue
-                    d_k = overlap_durs[k]
-                    d2 = d_k * d_k
-                    ec_weighted[k, :] = (
-                        center_scale
-                        * bin_widths
-                        * (d_k - binstops + bin_widths / 2)
-                        / d2
+                uniq_d, inverse = np.unique(
+                    overlap_durs[valid], return_inverse=True
+                )
+                if uniq_d.size:
+                    shapes = np.stack(
+                        [
+                            _expected_counts_shape(B, bin_size, float(d))
+                            for d in uniq_d
+                        ]
                     )
+                    ec_weighted[valid, :] = shapes[inverse]
 
         # When ``pairs`` is explicit (the caller passed a specific pair
         # list), construct only an ``(n_pairs, B)`` output instead of
