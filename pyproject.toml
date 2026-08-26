@@ -25,12 +25,16 @@ dynamic = ["version"]
 dependencies = [
     'xarray',
     'scikit-learn',
-    'ipympl'
+    'matplotlib'
 ]
 
 [project.optional-dependencies]
 numba = [
     'numba>=0.59'
+]
+# Interactive matplotlib backend for notebooks; nothing in src/ imports it.
+interactive = [
+    'ipympl'
 ]
 dev = [
     'polars',
@@ -51,6 +55,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "aind_ephys_utils.helpers" = ["*.csv"]
+# PEP 561: ship inline annotations so downstream type checkers see them.
+"aind_ephys_utils" = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = {attr = "aind_ephys_utils.__version__"}
