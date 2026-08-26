@@ -8,6 +8,7 @@ The names re-exported here are the main entry points; the full surface
 from __future__ import annotations
 
 from .ccg import (
+    CCGCounts,
     NN_to_pair_vec,
     TrialSegments,
     ccg,
@@ -25,6 +26,7 @@ from .ccg import (
     peak_contributing_spikes,
     rescale_ccgs,
     smooth_ccgs,
+    to_dense,
 )
 from .connectivity import (
     build_shape_prefilter,
@@ -51,6 +53,8 @@ __all__ = [
     "jitter_spikes_times",
     "smooth_ccgs",
     "rescale_ccgs",
+    "CCGCounts",
+    "to_dense",
     "pair_vec_to_NN",
     "NN_to_pair_vec",
     # connectivity — main entry points

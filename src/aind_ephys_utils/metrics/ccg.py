@@ -1399,6 +1399,130 @@ class _CCGBuffers:
         return bufs
 
 
+class CCGCounts:
+    """A pair-major CCG result and the metadata needed to interpret it.
+
+    Compute and transforms stay pair-major end to end; the dense
+    ``(N, N, B)`` layout is an explicit projection via :func:`to_dense`,
+    never something a compute function does inline.  That projection is
+    ~2 GB at ``N=499, B=1001``, so it has to be asked for.
+
+    Attributes
+    ----------
+    counts
+        ``(n_pairs, B)`` per-pair histogram in ``pairs`` row order -- raw
+        kernel counts, or any pair-major transform of them.
+    lags
+        ``(B,)`` lag-bin centres.
+    pairs
+        ``(n_pairs, 2)`` array of ``(i, j)`` unit indices.
+    n_units
+        ``N``: the side of the square a dense projection would fill.
+    bin_size
+        Lag bin width, in the timebase of *lags*.
+    pairing
+        Trial pairing ``sigma`` the result was computed under, or ``None``
+        for a session-wide result.  :func:`to_dense` reads it to decide
+        whether the mirror is defined at all.
+    exposure
+        ``(B,)`` lag exposure ``Q_b``, when one geometry describes every
+        trial; ``None`` when trials differ in duration and none does.
+    expected
+        ``(n_pairs, B)`` expected counts under independence, when computed.
+    """
+
+    __slots__ = (
+        "counts",
+        "lags",
+        "pairs",
+        "n_units",
+        "bin_size",
+        "pairing",
+        "exposure",
+        "expected",
+    )
+
+    def __init__(
+        self,
+        counts: np.ndarray,
+        lags: np.ndarray,
+        pairs: np.ndarray,
+        n_units: int,
+        bin_size: float,
+        pairing: np.ndarray | None = None,
+        exposure: np.ndarray | None = None,
+        expected: np.ndarray | None = None,
+    ) -> None:
+        """Store a pair-major CCG result and its interpretation metadata."""
+        self.counts = counts
+        self.lags = lags
+        self.pairs = pairs
+        self.n_units = n_units
+        self.bin_size = bin_size
+        self.pairing = pairing
+        self.exposure = exposure
+        self.expected = expected
+
+    @property
+    def n_pairs(self) -> int:
+        """Number of pairs carried by this result."""
+        return int(self.pairs.shape[0])
+
+    def mirror_is_defined(self) -> bool:
+        """Whether ``C[j, i] == reverse(C[i, j])`` holds for this result.
+
+        Reversing a histogram computes ``h^{sigma^-1}``, while the
+        transposed cell needs ``h^sigma``.  Those coincide only when
+        ``sigma`` is an involution -- which the identity satisfies, and
+        which a session-wide result (no pairing at all) satisfies
+        vacuously.
+        """
+        return self.pairing is None or _is_involution(self.pairing)
+
+
+def to_dense(
+    values: np.ndarray | None,
+    counts: CCGCounts,
+    *,
+    fill: float = np.nan,
+) -> np.ndarray:
+    """Project a pair-major array into the dense ``(N, N, B)`` layout.
+
+    This is the single owner of the mirror policy.  ``pairs`` carries only
+    ``(i, j)`` with ``i <= j``; the transposed cell comes from the flip rule
+    ``C[j, i] = reverse(C[i, j])``, which holds only when the trial pairing
+    is an involution.  Under any other pairing ``C[j, i]`` is not
+    recoverable from ``C[i, j]``, so it is filled with ``NaN`` rather than a
+    plausible wrong number.
+
+    Parameters
+    ----------
+    values
+        ``(n_pairs, B)`` array to project; ``None`` projects
+        ``counts.counts``.
+    counts
+        Supplies ``pairs``, ``n_units`` and ``pairing``.
+    fill
+        Value for cells that no pair covers.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n_units, n_units, B)`` array.
+    """
+    vals = counts.counts if values is None else values
+    pairs = counts.pairs
+    n_units = counts.n_units
+    out = np.full((n_units, n_units, vals.shape[1]), fill, dtype=np.float64)
+    mirrorable = counts.mirror_is_defined()
+    for p in range(pairs.shape[0]):
+        i, j = int(pairs[p, 0]), int(pairs[p, 1])
+        out[i, j, :] = vals[p]
+        if i != j:
+            out[j, i, :] = vals[p][::-1] if mirrorable else np.nan
+    return out
+
+
 def ccg_trial_paired(  # noqa: C901
     trial_segments: TrialSegments,
     pairing: np.ndarray,
@@ -1514,7 +1638,6 @@ def ccg_trial_paired(  # noqa: C901
 
     pairing = np.asarray(pairing, dtype=np.int64)
     _validate_pairing_support(ts, pairing)
-    involutive = _is_involution(pairing)
 
     # Overlap window per trial.  A no-op under the support contract; kept so
     # the kernel's clipped and unclipped branches stay interchangeable.
@@ -1639,59 +1762,45 @@ def ccg_trial_paired(  # noqa: C901
     # Skipping the (N, N, B) materialisation is a 2 GB saving at
     # N=499, B=1001 — and lets the caller stay per-pair end-to-end
     # without having to project after the fact.
-    if pairs is not None:
-        C = np.zeros((n_pairs, B), dtype=np.float64)
-        for p in range(n_pairs):
-            i, j = pair_arr[p, 0], pair_arr[p, 1]
-            total_dur = bufs.out_dur[p]
-            if total_dur <= 0:
-                continue
-            h = bufs.out_hist[p, :].astype(np.float64)
-            if use_corrcoef:
-                if skip_clipping:
-                    h -= ec_shape_single * cross_per_pair[p]
-                else:
-                    cross_per_trial = (
-                        trial_counts[i, :] * trial_counts[j, pairing]
-                    )
-                    h -= ec_weighted.T @ cross_per_trial
-                denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
-                if denom > 0:
-                    h /= denom
-            # Blank after normalization, not before: subtracting the
-            # expected count from an already-zeroed bin left -E/denom here
-            # while the session path returned 0.
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
-            C[p, :] = h
-    else:
-        C = np.zeros((N, N, B), dtype=np.float64)
-        for p in range(n_pairs):
-            i, j = pair_arr[p, 0], pair_arr[p, 1]
-            total_dur = bufs.out_dur[p]
-            if total_dur <= 0:
-                continue
-            h = bufs.out_hist[p, :].astype(np.float64)
-            if use_corrcoef:
-                if skip_clipping:
-                    h -= ec_shape_single * cross_per_pair[p]
-                else:
-                    cross_per_trial = (
-                        trial_counts[i, :] * trial_counts[j, pairing]
-                    )
-                    h -= ec_weighted.T @ cross_per_trial
-                denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
-                if denom > 0:
-                    h /= denom
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
-            C[i, j, :] = h
-            if i != j:
-                # reverse(h) is h^{sigma^-1}, not h^sigma; only an
-                # involution makes the two coincide.
-                C[j, i, :] = h[::-1] if involutive else np.nan
+    C = np.zeros((n_pairs, B), dtype=np.float64)
+    for p in range(n_pairs):
+        i, j = pair_arr[p, 0], pair_arr[p, 1]
+        total_dur = bufs.out_dur[p]
+        if total_dur <= 0:
+            continue
+        h = bufs.out_hist[p, :].astype(np.float64)
+        if use_corrcoef:
+            if skip_clipping:
+                h -= ec_shape_single * cross_per_pair[p]
+            else:
+                cross_per_trial = trial_counts[i, :] * trial_counts[j, pairing]
+                h -= ec_weighted.T @ cross_per_trial
+            denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
+            if denom > 0:
+                h /= denom
+        # Blank after normalization, not before: subtracting the expected
+        # count from an already-zeroed bin left -E/denom here while the
+        # session path returned 0.
+        if i == j and exclude_zero_lag_autocorr:
+            h[half] = 0.0
+        C[p, :] = h
 
-    return lags, C
+    if pairs is not None:
+        return lags, C
+
+    # Dense is a projection, not a second compute path.  ``fill=0.0`` keeps
+    # the historical dense semantics: with ``pairs=None`` the pair list is
+    # the upper triangle, so the only uncovered cells are the diagonal when
+    # ``include_autocorr`` is False.
+    result = CCGCounts(
+        counts=C,
+        lags=lags,
+        pairs=pair_arr,
+        n_units=N,
+        bin_size=bin_size,
+        pairing=pairing,
+    )
+    return lags, to_dense(C, result, fill=0.0)
 
 
 def ccg_trial_surrogates(  # noqa: C901
@@ -1861,7 +1970,6 @@ def ccg_trial_surrogates(  # noqa: C901
         pair_arr = bufs.pair_arr
         assert pair_arr is not None
         n_pairs = pair_arr.shape[0]
-        involutive = _is_involution(pairing)
 
         if use_corrcoef:
             if uniform_fast:
@@ -1942,52 +2050,39 @@ def ccg_trial_surrogates(  # noqa: C901
         # When ``pairs`` is ``None`` (default), preserve the original
         # ``(N, N, B)`` behaviour with the auto/cross mirror so the
         # public API is unchanged for that path.
-        if pairs is not None:
-            C = np.zeros((n_pairs, B), dtype=np.float64)
-            for p in range(n_pairs):
-                i, j = pair_arr[p, 0], pair_arr[p, 1]
-                total_dur = bufs.out_dur[p]
-                if total_dur <= 0:
-                    continue
-                h = bufs.out_hist[p, :].astype(np.float64)
-                if use_corrcoef:
-                    if uniform_fast:
-                        h -= uniform_ec * cross_per_pair[p]
-                    else:
-                        cross_per_trial = (
-                            trial_counts[i, :] * paired_counts[j, :]
-                        )
-                        h -= ec_weighted.T @ cross_per_trial
-                    denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
-                    if denom > 0:
-                        h /= denom
-                if i == j and exclude_zero_lag_autocorr:
-                    h[half] = 0.0
-                C[p, :] = h
-        else:
-            C = np.zeros((N, N, B), dtype=np.float64)
-            for p in range(n_pairs):
-                i, j = pair_arr[p, 0], pair_arr[p, 1]
-                total_dur = bufs.out_dur[p]
-                if total_dur <= 0:
-                    continue
-                h = bufs.out_hist[p, :].astype(np.float64)
-                if use_corrcoef:
-                    if uniform_fast:
-                        h -= uniform_ec * cross_per_pair[p]
-                    else:
-                        cross_per_trial = (
-                            trial_counts[i, :] * paired_counts[j, :]
-                        )
-                        h -= ec_weighted.T @ cross_per_trial
-                    denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
-                    if denom > 0:
-                        h /= denom
-                if i == j and exclude_zero_lag_autocorr:
-                    h[half] = 0.0
-                C[i, j, :] = h
-                if i != j:
-                    C[j, i, :] = h[::-1] if involutive else np.nan
+        C = np.zeros((n_pairs, B), dtype=np.float64)
+        for p in range(n_pairs):
+            i, j = pair_arr[p, 0], pair_arr[p, 1]
+            total_dur = bufs.out_dur[p]
+            if total_dur <= 0:
+                continue
+            h = bufs.out_hist[p, :].astype(np.float64)
+            if use_corrcoef:
+                if uniform_fast:
+                    h -= uniform_ec * cross_per_pair[p]
+                else:
+                    cross_per_trial = trial_counts[i, :] * paired_counts[j, :]
+                    h -= ec_weighted.T @ cross_per_trial
+                denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
+                if denom > 0:
+                    h /= denom
+            if i == j and exclude_zero_lag_autocorr:
+                h[half] = 0.0
+            C[p, :] = h
+
+        if pairs is None:
+            C = to_dense(
+                C,
+                CCGCounts(
+                    counts=C,
+                    lags=lags,
+                    pairs=pair_arr,
+                    n_units=N,
+                    bin_size=bin_size,
+                    pairing=pairing,
+                ),
+                fill=0.0,
+            )
 
         return reduce(lags, C) if reduce is not None else C
 
@@ -2488,7 +2583,7 @@ def pair_vec_to_NN(
     n_units: int,
     *,
     fill: float = 0.0,
-    mirror: bool = True,
+    mirror: bool,
     dtype: object = None,
 ) -> np.ndarray:
     """Scatter a per-pair vector into an ``(n_units, n_units)`` array.
@@ -2510,8 +2605,14 @@ def pair_vec_to_NN(
     fill
         Value for cells not covered by ``pairs``.
     mirror
-        If ``True``, also write each value at the transposed cell
-        ``(j, i)`` (symmetric fill).
+        Whether to also write each value at the transposed cell ``(j, i)``.
+        Required rather than defaulted: mirroring is valid only for a
+        statistic that is symmetric under swapping the pair.  A max over
+        *all* lags is (``max(reverse(x)) == max(x)``); a directional one --
+        peak lag, or a max over positive lags only, the natural ``i -> j``
+        test -- is not, and mirroring it is silently wrong in the same
+        ``sigma^-1`` way as the dense CCG mirror.  See
+        :meth:`CCGCounts.mirror_is_defined` for the histogram-valued case.
     dtype
         Output dtype; defaults to ``pair_values.dtype``.
 

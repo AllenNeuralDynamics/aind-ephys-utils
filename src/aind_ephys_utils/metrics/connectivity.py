@@ -417,11 +417,25 @@ def run_two_stage_mc(  # noqa: C901
         )
 
     # Scatter per-prefilter-pair vectors into (N, N) for the public API.
+    # Mirroring is valid here only because both statistics reduce over the
+    # whole lag axis (``np.max(C, axis=-1)`` and a percentile of it), which
+    # is invariant under the lag reversal that relates (i, j) to (j, i).
+    # A directional statistic would need ``mirror=False``.
     p_values = pair_vec_to_NN(
-        p_values_pf, prefilter_pairs, n_units, fill=1.0, dtype=np.float64
+        p_values_pf,
+        prefilter_pairs,
+        n_units,
+        fill=1.0,
+        mirror=True,
+        dtype=np.float64,
     )
     surr_threshold = pair_vec_to_NN(
-        threshold_pf, prefilter_pairs, n_units, fill=np.nan, dtype=np.float64
+        threshold_pf,
+        prefilter_pairs,
+        n_units,
+        fill=np.nan,
+        mirror=True,
+        dtype=np.float64,
     )
 
     return (

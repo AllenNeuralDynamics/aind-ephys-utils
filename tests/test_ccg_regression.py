@@ -17,6 +17,7 @@ import numpy as np
 import xarray as xr
 
 from aind_ephys_utils.metrics.ccg import (
+    CCGCounts,
     TrialSegments,
     _build_csr,
     _expected_counts_shape,
@@ -26,6 +27,8 @@ from aind_ephys_utils.metrics.ccg import (
     ccg_trial_paired,
     clip_spikes_to_trials,
     clip_to_window,
+    pair_vec_to_NN,
+    to_dense,
 )
 
 try:
@@ -733,6 +736,89 @@ class LagExposureTest(unittest.TestCase):
         Q = _lag_exposure(21, 0.002, 0.5)
         side = Q[11:]
         self.assertTrue(np.all(np.diff(side) < 0))
+
+
+class DenseProjectionTest(unittest.TestCase):
+    """``to_dense`` is the single owner of the mirror policy."""
+
+    @staticmethod
+    def _counts(pairing, n_units=3, nbins=5):
+        n_pairs = n_units * (n_units + 1) // 2
+        pairs = np.array(
+            [(i, j) for i in range(n_units) for j in range(i, n_units)]
+        )
+        vals = np.arange(n_pairs * nbins, dtype=np.float64).reshape(
+            n_pairs, nbins
+        )
+        return vals, CCGCounts(
+            counts=vals,
+            lags=np.arange(nbins, dtype=np.float64),
+            pairs=pairs,
+            n_units=n_units,
+            bin_size=1.0,
+            pairing=pairing,
+        )
+
+    def test_involution_mirrors_by_the_flip_rule(self):
+        vals, counts = self._counts(np.array([1, 0, 3, 2]))
+        self.assertTrue(counts.mirror_is_defined())
+        dense = to_dense(vals, counts)
+        for p, (i, j) in enumerate(counts.pairs):
+            np.testing.assert_array_equal(dense[i, j], vals[p])
+            if i != j:
+                np.testing.assert_array_equal(dense[j, i], vals[p][::-1])
+
+    def test_non_involution_refuses_to_invent_the_transpose(self):
+        # A 3-cycle: sigma(sigma(k)) != k, so reverse(h) is h^{sigma^-1}
+        # where the transposed cell needs h^sigma.  Unrecoverable, so NaN
+        # rather than a plausible wrong number.
+        vals, counts = self._counts(np.array([1, 2, 0]))
+        self.assertFalse(counts.mirror_is_defined())
+        dense = to_dense(vals, counts)
+        for p, (i, j) in enumerate(counts.pairs):
+            np.testing.assert_array_equal(dense[i, j], vals[p])
+            if i != j:
+                self.assertTrue(np.isnan(dense[j, i]).all())
+
+    def test_session_result_has_no_pairing_and_mirrors(self):
+        vals, counts = self._counts(None)
+        self.assertTrue(counts.mirror_is_defined())
+        self.assertFalse(np.isnan(to_dense(vals, counts)).any())
+
+    def test_uncovered_cells_take_fill(self):
+        vals = np.ones((1, 3))
+        counts = CCGCounts(
+            counts=vals,
+            lags=np.arange(3, dtype=np.float64),
+            pairs=np.array([[0, 1]]),
+            n_units=3,
+            bin_size=1.0,
+        )
+        dense = to_dense(vals, counts, fill=-7.0)
+        np.testing.assert_array_equal(dense[2, 2], [-7.0] * 3)
+        np.testing.assert_array_equal(dense[0, 1], [1.0] * 3)
+
+    def test_values_default_to_the_carried_counts(self):
+        vals, counts = self._counts(None)
+        np.testing.assert_array_equal(
+            to_dense(None, counts), to_dense(vals, counts)
+        )
+
+
+class MirrorPreconditionTest(unittest.TestCase):
+    """``pair_vec_to_NN`` makes the caller state the mirror decision."""
+
+    def test_mirror_is_required(self):
+        # Defaulting it silently transposed directional statistics.
+        with self.assertRaises(TypeError):
+            pair_vec_to_NN(np.array([1.0]), np.array([[0, 1]]), 2)
+
+    def test_explicit_mirror_still_works_both_ways(self):
+        v, pairs = np.array([5.0]), np.array([[0, 1]])
+        on = pair_vec_to_NN(v, pairs, 2, fill=0.0, mirror=True)
+        off = pair_vec_to_NN(v, pairs, 2, fill=0.0, mirror=False)
+        self.assertEqual(on[1, 0], 5.0)
+        self.assertEqual(off[1, 0], 0.0)
 
 
 if __name__ == "__main__":
