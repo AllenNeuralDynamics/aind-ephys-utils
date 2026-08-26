@@ -26,6 +26,13 @@ from aind_ephys_utils.metrics.ccg import (
     ccg_between_sets_sparse,
     ccg_trial_paired,
     clip_spikes_to_trials,
+    compute_ccg_counts,
+    covariance_density,
+    cross_intensity,
+    directional_excess,
+    legacy_auto_normalized,
+    normalized_covariance,
+    pair_correlation,
     clip_to_window,
     pair_vec_to_NN,
     to_dense,
@@ -819,6 +826,167 @@ class MirrorPreconditionTest(unittest.TestCase):
         off = pair_vec_to_NN(v, pairs, 2, fill=0.0, mirror=False)
         self.assertEqual(on[1, 0], 5.0)
         self.assertEqual(off[1, 0], 0.0)
+
+
+@needs_numba
+class TransformTest(unittest.TestCase):
+    """Lag-profile statistics and the integrated effect size."""
+
+    @staticmethod
+    def _segments(bin_seed=0, n_trials=12, dur=2.0, rate=60.0, coupling=0.3):
+        """Two units where j fires extra spikes 5 ms after each i spike."""
+        rng = np.random.default_rng(bin_seed)
+        starts = np.arange(n_trials) * (dur + 1.0)
+        epochs = np.column_stack([starts, starts + dur])
+        spikes_i, spikes_j = [], []
+        for t0 in starts:
+            si = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            sj = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            # Injected coupling: a fraction of i's spikes drive one at +5 ms.
+            driven = si[rng.random(si.size) < coupling] + 0.005
+            driven = driven[driven < dur]
+            spikes_i.append(si + t0)
+            spikes_j.append(np.sort(np.concatenate([sj, driven])) + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(spikes_i), np.concatenate(spikes_j)],
+            epochs,
+            align_times=starts,
+        )
+
+    def test_directional_excess_is_invariant_across_bin_sizes(self):
+        # The plan's acceptance test 8.  A peak height is a density and
+        # moves with the bin width; an integrated count ratio does not.
+        # Averaged over seeds: a single draw carries enough sampling noise
+        # (the centre bin alone has sd ~0.014 at the coarsest binning) to
+        # swamp the invariance being tested.
+        window = (0.002, 0.02)
+        values = []
+        for bin_size in [0.0005, 0.001, 0.002, 0.004]:
+            per_seed = []
+            for seed in range(8):
+                counts = compute_ccg_counts(
+                    self._segments(seed),
+                    np.arange(12),
+                    bin_size=bin_size,
+                    max_lag=0.05,
+                    include_autocorr=False,
+                )
+                per_seed.append(float(directional_excess(counts, window)[0]))
+            values.append(float(np.mean(per_seed)))
+        spread = max(values) - min(values)
+        self.assertLess(
+            spread,
+            0.025 * abs(np.mean(values)),
+            f"directional_excess moved with bin size: {values}",
+        )
+        # And it should recover roughly the injected coupling.
+        self.assertGreater(np.mean(values), 0.15)
+
+    def test_peak_density_does_move_with_bin_size(self):
+        # The contrast that makes the previous test meaningful: a peak
+        # height is a density, so it is resolution-dependent where the
+        # integrated count ratio is not.
+        ts = self._segments()
+        peaks = []
+        for bin_size in [0.0005, 0.004]:
+            counts = compute_ccg_counts(
+                ts,
+                np.arange(len(ts.durations)),
+                bin_size=bin_size,
+                max_lag=0.05,
+                include_autocorr=False,
+            )
+            peaks.append(float(np.nanmax(covariance_density(counts)[0])))
+        self.assertGreater(peaks[0], 4 * peaks[1])
+
+    def test_baselines_are_where_the_definitions_say(self):
+        # Independent units: covariance density ~0, pair correlation ~1.
+        rng = np.random.default_rng(7)
+        n_trials, dur = 40, 2.0
+        starts = np.arange(n_trials) * (dur + 1.0)
+        epochs = np.column_stack([starts, starts + dur])
+        trains = [
+            np.concatenate(
+                [
+                    np.sort(rng.uniform(0, dur, rng.poisson(80.0 * dur))) + t0
+                    for t0 in starts
+                ]
+            )
+            for _ in range(2)
+        ]
+        ts = clip_spikes_to_trials(trains, epochs, align_times=starts)
+        counts = compute_ccg_counts(
+            ts,
+            np.arange(n_trials),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        self.assertAlmostEqual(
+            float(np.mean(covariance_density(counts)[0])), 0.0, delta=200.0
+        )
+        self.assertAlmostEqual(
+            float(np.mean(pair_correlation(counts)[0])), 1.0, delta=0.05
+        )
+        # cross_intensity sits at lambda_i lambda_j, not at zero.
+        lam_i, lam_j = counts.rates()
+        self.assertAlmostEqual(
+            float(np.mean(cross_intensity(counts)[0])),
+            float(lam_i[0] * lam_j[0]),
+            delta=0.1 * float(lam_i[0] * lam_j[0]),
+        )
+
+    def test_transforms_respect_out(self):
+        ts = self._segments()
+        counts = compute_ccg_counts(
+            ts,
+            np.arange(len(ts.durations)),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        for fn in (
+            cross_intensity,
+            covariance_density,
+            normalized_covariance,
+            pair_correlation,
+            legacy_auto_normalized,
+        ):
+            with self.subTest(fn=fn.__name__):
+                buf = np.zeros_like(counts.counts)
+                got = fn(counts, out=buf)
+                self.assertIs(got, buf)
+                np.testing.assert_array_equal(buf, fn(counts))
+
+    def test_density_normalizations_need_a_common_geometry(self):
+        # Trials of differing duration have no single Q_b.
+        starts = np.arange(4) * 5.0
+        epochs = np.column_stack([starts, starts + np.array([1.0, 2.0] * 2)])
+        trains = [starts + 0.1, starts + 0.2]
+        ts = clip_spikes_to_trials(trains, epochs, align_times=starts)
+        counts = compute_ccg_counts(
+            ts, np.arange(4), bin_size=0.01, max_lag=0.05
+        )
+        self.assertIsNone(counts.exposure)
+        with self.assertRaisesRegex(ValueError, "no single lag exposure"):
+            covariance_density(counts)
+
+    def test_legacy_matches_the_corrcoef_path(self):
+        ts = self._segments()
+        pairing = np.arange(len(ts.durations))
+        pairs = np.array([[0, 1]])
+        _, direct = ccg_trial_paired(
+            ts,
+            pairing,
+            bin_size=0.002,
+            max_lag=0.02,
+            normalize="corrcoef",
+            pairs=pairs,
+        )
+        counts = compute_ccg_counts(
+            ts, pairing, bin_size=0.002, max_lag=0.02, pairs=pairs
+        )
+        np.testing.assert_array_equal(direct, legacy_auto_normalized(counts))
 
 
 if __name__ == "__main__":

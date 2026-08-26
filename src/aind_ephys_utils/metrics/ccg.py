@@ -1440,6 +1440,12 @@ class CCGCounts:
         "pairing",
         "exposure",
         "expected",
+        "expected_factors",
+        "expected_trial",
+        "n_spikes",
+        "durations",
+        "auto_direct",
+        "auto_paired",
     )
 
     def __init__(
@@ -1452,6 +1458,14 @@ class CCGCounts:
         pairing: np.ndarray | None = None,
         exposure: np.ndarray | None = None,
         expected: np.ndarray | None = None,
+        expected_factors: tuple[np.ndarray, np.ndarray] | None = None,
+        expected_trial: (
+            tuple[np.ndarray, np.ndarray, np.ndarray] | None
+        ) = None,
+        n_spikes: np.ndarray | None = None,
+        durations: np.ndarray | None = None,
+        auto_direct: np.ndarray | None = None,
+        auto_paired: np.ndarray | None = None,
     ) -> None:
         """Store a pair-major CCG result and its interpretation metadata."""
         self.counts = counts
@@ -1462,6 +1476,86 @@ class CCGCounts:
         self.pairing = pairing
         self.exposure = exposure
         self.expected = expected
+        self.expected_factors = expected_factors
+        self.expected_trial = expected_trial
+        self.n_spikes = n_spikes
+        self.durations = durations
+        self.auto_direct = auto_direct
+        self.auto_paired = auto_paired
+
+    def expected_array(self) -> np.ndarray:
+        """Expected counts as a full ``(n_pairs, B)`` array.
+
+        Stored factored as ``shape[b] * scale[p]`` whenever one lag geometry
+        serves every trial, which is the common case and keeps the memory
+        linear in pairs; this materializes it.
+        """
+        if self.expected is not None:
+            return self.expected
+        if self.expected_factors is not None:
+            shape, scale = self.expected_factors
+            return shape[np.newaxis, :] * scale[:, np.newaxis]
+        if self.expected_trial is not None:
+            return np.stack(
+                [self.expected_row(p) for p in range(self.n_pairs)]
+            )
+        raise ValueError(
+            "this result carries no expected counts; compute it with "
+            "compute_ccg_counts, or pass an explicit baseline."
+        )
+
+    def expected_row(self, p: int) -> np.ndarray:
+        """Expected counts for pair *p* alone, as a ``(B,)`` lag profile.
+
+        Transforms use this rather than :meth:`expected_array` so their
+        temporaries stay one lag profile instead of one per pair: the full
+        array is ~1 GB at ``N=499, B=1001``.
+        """
+        if self.expected is not None:
+            return self.expected[p]
+        if self.expected_factors is not None:
+            shape, scale = self.expected_factors
+            return shape * scale[p]
+        if self.expected_trial is not None:
+            # Trials differ in duration, so E is not rank-1 in (lag, pair);
+            # it stays factored through the per-trial spike counts.
+            ec_weighted, trial_counts, pairing = self.expected_trial
+            i, j = int(self.pairs[p, 0]), int(self.pairs[p, 1])
+            cross = trial_counts[i, :] * trial_counts[j, pairing]
+            return np.asarray(ec_weighted.T @ cross)
+        raise ValueError(
+            "this result carries no expected counts; compute it with "
+            "compute_ccg_counts, or pass an explicit baseline."
+        )
+
+    def rates(self) -> tuple[np.ndarray, np.ndarray]:
+        """Per-pair firing rates ``(lambda_i, lambda_j)``, each ``(n_pairs,)``.
+
+        Rates are ``n_spikes / duration`` over the observed support, so they
+        are the rates the expected-count term is built from rather than
+        whole-session rates.
+        """
+        if self.n_spikes is None or self.durations is None:
+            raise ValueError(
+                "rates need `n_spikes` and `durations`; this result was "
+                "built without observation metadata."
+            )
+        dur = np.asarray(self.durations, dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            lam_i = self.n_spikes[self.pairs[:, 0]] / dur
+            lam_j = self.n_spikes[self.pairs[:, 1]] / dur
+        return lam_i, lam_j
+
+    def _exposure(self) -> np.ndarray:
+        """Lag exposure, or a clear error when no single geometry applies."""
+        if self.exposure is None:
+            raise ValueError(
+                "this result has no single lag exposure: its trials differ "
+                "in duration, so no one Q_b describes it.  Density "
+                "normalizations require a common geometry (see "
+                "clip_to_window)."
+            )
+        return self.exposure
 
     @property
     def n_pairs(self) -> int:
@@ -1478,6 +1572,189 @@ class CCGCounts:
         vacuously.
         """
         return self.pairing is None or _is_involution(self.pairing)
+
+
+def _alloc(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
+    """Return *out*, or a fresh ``(n_pairs, B)`` float64 buffer."""
+    if out is not None:
+        return out
+    return np.empty(counts.counts.shape, dtype=np.float64)
+
+
+def _baseline_row(
+    counts: CCGCounts, baseline: np.ndarray | None, p: int
+) -> np.ndarray:
+    """Baseline lag profile for pair *p*, defaulting to expected counts."""
+    return counts.expected_row(p) if baseline is None else baseline[p]
+
+
+def cross_intensity(
+    counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Joint event intensity ``rho_ij(tau) = H_b / Q_b``, in Hz^2.
+
+    The raw second-order product density: how often the pair fires at a
+    given lag, per unit of the time-squared exposure that lag actually had.
+    Its baseline under independence is ``lambda_i lambda_j``, not zero.
+    """
+    exposure = counts._exposure()
+    res = _alloc(counts, out)
+    for p in range(counts.n_pairs):
+        res[p, :] = counts.counts[p] / exposure
+    return res
+
+
+def excess_density(
+    counts: CCGCounts,
+    baseline: np.ndarray | None = None,
+    *,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Excess joint intensity ``(H_b - B_b) / Q_b`` over a baseline, in Hz^2.
+
+    *baseline* defaults to the expected counts carried on the result -- the
+    independence baseline -- which makes this the covariance density.  Pass
+    a shift-predictor or surrogate-mean baseline for the general form.
+    """
+    exposure = counts._exposure()
+    res = _alloc(counts, out)
+    for p in range(counts.n_pairs):
+        res[p, :] = (
+            counts.counts[p] - _baseline_row(counts, baseline, p)
+        ) / exposure
+    return res
+
+
+def covariance_density(
+    counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Covariance density ``c_ij(tau) = rho_ij - lambda_i lambda_j``, in Hz^2.
+
+    :func:`excess_density` against the independence baseline, and the most
+    literal answer to "how much more often than chance".  Zero under
+    independence.
+    """
+    return excess_density(counts, None, out=out)
+
+
+def normalized_covariance(
+    counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Rate-normalized covariance ``c_ij / sqrt(lambda_i lambda_j)``, in Hz.
+
+    The recommended pair-comparable statistic: symmetric between the two
+    units, free of the leading firing-rate dependence of sampling noise,
+    independent of recording duration, and a density -- so it does not move
+    with the display bin width.  It is *not* bounded to ``[-1, 1]``.
+    """
+    lam_i, lam_j = counts.rates()
+    denom = np.sqrt(lam_i * lam_j)
+    exposure = counts._exposure()
+    res = _alloc(counts, out)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for p in range(counts.n_pairs):
+            row = (counts.counts[p] - counts.expected_row(p)) / exposure
+            res[p, :] = row / denom[p] if denom[p] > 0 else np.nan
+    return res
+
+
+def fold_over_baseline(
+    counts: CCGCounts,
+    baseline: np.ndarray | None = None,
+    *,
+    out: np.ndarray | None = None,
+) -> np.ndarray:
+    """Ratio ``H_b / B_b`` of observed to baseline counts, dimensionless.
+
+    *baseline* defaults to the expected counts on the result, making this
+    the pair correlation.  1 means "as often as the baseline predicts".
+    """
+    res = _alloc(counts, out)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for p in range(counts.n_pairs):
+            res[p, :] = counts.counts[p] / _baseline_row(counts, baseline, p)
+    return res
+
+
+def pair_correlation(
+    counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Pair correlation ``g_ij(tau) = rho_ij / (lambda_i lambda_j)``.
+
+    :func:`fold_over_baseline` against the independence baseline.
+    Dimensionless, and 1 rather than 0 under independence, so plots usually
+    show ``g - 1``.
+    """
+    return fold_over_baseline(counts, None, out=out)
+
+
+def legacy_auto_normalized(
+    counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Historical ``corrcoef`` statistic ``(H_b - E_b) / sqrt(A_i A_j)``.
+
+    Retained for continuity with existing results and with
+    ``SpikeAnalysis.jl``.  It is a shape statistic, not a correlation
+    coefficient: reading it as one bounded to ``[-1, 1]`` is a category
+    error, and its auto term carries a known zero-lag bias.  Prefer
+    :func:`normalized_covariance` for new work.
+    """
+    if counts.auto_direct is None or counts.auto_paired is None:
+        raise ValueError(
+            "the legacy statistic needs auto terms; this result was built "
+            "without them."
+        )
+    a_i = counts.auto_direct[counts.pairs[:, 0]]
+    a_j = counts.auto_paired[counts.pairs[:, 1]]
+    denom = np.sqrt(np.abs(a_i * a_j))
+    res = _alloc(counts, out)
+    for p in range(counts.n_pairs):
+        row = counts.counts[p] - counts.expected_row(p)
+        res[p, :] = row / denom[p] if denom[p] > 0 else row
+    return res
+
+
+def directional_excess(
+    counts: CCGCounts, window: tuple[float, float] | None = None
+) -> np.ndarray:
+    """Integrated excess target spikes per source spike over *window*.
+
+    ``sum_{b in W} (H_b - E_b) / n_i`` -- one number per pair, not a lag
+    profile.  This is the effect size to report: it is a count ratio, so
+    unlike a peak height it does not move with the bin width, and summing
+    over ``W`` is unaffected by how ``W`` is subdivided.  Report ``W``
+    alongside it.
+
+    *window* is a ``(low, high)`` lag interval, half-open on the right, and
+    defaults to every lag.  Positive lags are the ``i -> j`` direction.
+
+    A one-sided window that includes the centre bin mixes directions: that
+    bin spans both lag signs, so it carries ``j -> i`` coincidences as well.
+    Where the reverse direction has real structure that biases the result.
+    Where it does not, it costs variance rather than accuracy -- and that
+    variance grows with the bin width, since the centre bin stays one bin
+    wide however coarse the binning gets.  Start the window at one bin
+    width to keep it out.
+    """
+    if counts.n_spikes is None:
+        raise ValueError(
+            "directional_excess needs `n_spikes`; this result was built "
+            "without observation metadata."
+        )
+    sel = slice(None)
+    if window is not None:
+        low, high = window
+        if not high > low:
+            raise ValueError(
+                f"window must satisfy low < high, got {window!r}."
+            )
+        sel = (counts.lags >= low) & (counts.lags < high)
+    n_i = counts.n_spikes[counts.pairs[:, 0]].astype(np.float64)
+    totals = np.empty(counts.n_pairs, dtype=np.float64)
+    for p in range(counts.n_pairs):
+        totals[p] = (counts.counts[p] - counts.expected_row(p))[sel].sum()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.asarray(totals / n_i)
 
 
 def to_dense(
@@ -1521,6 +1798,220 @@ def to_dense(
         if i != j:
             out[j, i, :] = vals[p][::-1] if mirrorable else np.nan
     return out
+
+
+def compute_ccg_counts(  # noqa: C901
+    trial_segments: TrialSegments,
+    pairing: np.ndarray,
+    *,
+    bin_size: float = 0.001,
+    max_lag: float = 0.1,
+    include_autocorr: bool = True,
+    with_expected: bool = True,
+    pairs: np.ndarray | None = None,
+    buffers: _CCGBuffers | None = None,
+) -> CCGCounts:
+    """Compute raw pair-major CCG counts and their interpretation metadata.
+
+    The entry point for the transform layer.  Nothing is normalized and
+    nothing is projected to dense here::
+
+        counts = compute_ccg_counts(segments, pairing)
+        values = normalized_covariance(counts)
+        dense = to_dense(values, counts)
+
+    Expected counts are kept factored rather than materialized as
+    ``(n_pairs, B)``, which would be ~1 GB at ``N=499, B=1001``; the
+    transforms read them one lag profile at a time.
+
+    Parameters
+    ----------
+    trial_segments
+        Output of :func:`clip_spikes_to_trials`.
+    pairing
+        ``(n_trials,)`` trial pairing ``sigma``.  Identity gives the real
+        CCG; a derangement gives a surrogate.
+    bin_size, max_lag
+        Lag binning, in the timebase of the spike times.
+    include_autocorr
+        Whether to include the ``(i, i)`` self-pairs in the pair list.
+    with_expected
+        Compute the expected-count and auto terms.  ``False`` returns raw
+        counts alone, which is all a count-space surrogate comparison needs.
+    pairs
+        ``(n_pairs, 2)`` explicit pair list; defaults to the upper triangle.
+    buffers
+        Reusable :class:`_CCGBuffers`, for repeated calls at one geometry.
+
+    Returns
+    -------
+    CCGCounts
+        Raw counts plus lags, pairs, pairing, exposure, expected-count
+        factors, per-unit spike counts, per-pair durations, and auto terms.
+    """
+    ts = trial_segments
+    N = len(ts.segments)
+    half = int(round(max_lag / bin_size))
+    B = 2 * half + 1
+    lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
+
+    pairing = np.asarray(pairing, dtype=np.int64)
+    _validate_pairing_support(ts, pairing)
+
+    # Overlap window per trial.  A no-op under the support contract; kept so
+    # the kernel's clipped and unclipped branches stay interchangeable.
+    overlap_left = np.maximum(-ts.pre, -ts.pre[pairing])
+    overlap_right = np.minimum(ts.post, ts.post[pairing])
+
+    # Use pre-allocated buffers or create new ones
+    if buffers is not None:
+        bufs = buffers
+        if with_expected and bufs.auto_per_trial.size == 0:
+            raise ValueError(
+                "buffers were built with need_auto=False and cannot serve "
+                "expected and auto terms."
+            )
+        bufs.zero()
+    else:
+        bufs = _CCGBuffers.for_segments(
+            ts,
+            bin_size,
+            max_lag,
+            include_autocorr,
+            pairs=pairs,
+            need_auto=with_expected,
+        )
+
+    pair_arr = bufs.pair_arr
+    assert pair_arr is not None
+    n_pairs = pair_arr.shape[0]
+
+    # Skip clipping only when every trial shares the same support, so each
+    # pair's overlap equals that support (e.g., after clip_to_window).
+    skip_clipping = _uniform_support(ts)
+
+    # Single numba call: all pairs × all trials
+    if n_pairs > 0:
+        _ccg_all_pairs_trials(
+            ts.all_spikes,
+            ts.offsets,
+            ts.counts,
+            overlap_left,
+            overlap_right,
+            pair_arr,
+            pairing,
+            bin_size,
+            B,
+            bufs.out_hist,
+            bufs.out_dur,
+            skip_clipping,
+        )
+
+    # Corrcoef normalization
+    use_corrcoef = with_expected
+    if use_corrcoef:
+        bufs.auto_per_trial[:] = 0
+        _auto_terms_clipped(
+            ts.all_spikes,
+            ts.offsets,
+            ts.counts,
+            overlap_left,
+            overlap_right,
+            bin_size,
+            bufs.auto_per_trial,
+        )
+        overlap_valid = (overlap_right - overlap_left) > 0
+        auto_masked = bufs.auto_per_trial * overlap_valid[np.newaxis, :]
+        auto_sum_direct = auto_masked.sum(axis=1)
+        auto_sum_paired = auto_masked[:, pairing].sum(axis=1)
+
+    # Per-trial expected counts: sum_k ec_shape(d_k) * n_i(k) * n_j(σ(k))
+    # Edge correction is a within-trial boundary effect, so must use the
+    # per-trial duration and spike counts, not totals.  When durations are
+    # uniform, ec_shape(d) factors out and we only need the cross-product
+    # sum_k n_i(k) * n_j(σ(k)).
+    if use_corrcoef:
+        trial_counts = ts.counts  # (N, n_trials)
+        overlap_durs = overlap_right - overlap_left  # (n_trials,)
+
+        if skip_clipping:
+            # Uniform durations: ec_shape factors out, precompute once
+            d_uniform = float(overlap_durs[0])
+            ec_shape_single = _expected_counts_shape(B, bin_size, d_uniform)
+            # When ``pairs`` is set, only compute the cross-products
+            # we'll actually read.  Avoids the int64 non-BLAS matmul
+            # (~70 ms at N=499) and the unnecessary N²-cell materialise
+            # when n_pairs ≪ N².  Falls back to dense matmul (with
+            # float-promotion to enable BLAS) when n_pairs ≈ N² or
+            # the sparse intermediate would exceed 256 MB.
+            paired_counts = trial_counts[:, pairing]  # (N, n_trials)
+            sparse_bytes = n_pairs * paired_counts.shape[1] * 8
+            if pairs is not None and sparse_bytes < 256 * 1024 * 1024:
+                cross_per_pair = (
+                    trial_counts[pair_arr[:, 0]].astype(np.float64)
+                    * paired_counts[pair_arr[:, 1]].astype(np.float64)
+                ).sum(axis=1)
+            else:
+                cm_full = (
+                    trial_counts.astype(np.float64)
+                    @ paired_counts.astype(np.float64).T
+                )
+                cross_per_pair = cm_full[pair_arr[:, 0], pair_arr[:, 1]]
+        else:
+            # Non-uniform: ec_weighted[k] = ec_shape(d_k), a (n_trials, B)
+            # array.  Exposure enters only through the overlap duration, and
+            # matched supports make durations repeat, so build one shape per
+            # distinct duration rather than one per trial.
+            n_tr = trial_counts.shape[1]
+            valid = overlap_durs > 0
+            ec_weighted = np.zeros((n_tr, B), dtype=np.float64)
+            uniq_d, inverse = np.unique(
+                overlap_durs[valid], return_inverse=True
+            )
+            if uniq_d.size:
+                shapes = np.stack(
+                    [
+                        _expected_counts_shape(B, bin_size, float(d))
+                        for d in uniq_d
+                    ]
+                )
+                ec_weighted[valid, :] = shapes[inverse]
+
+    # When ``pairs`` is provided, allocate only the per-pair output.
+    # Skipping the (N, N, B) materialisation is a 2 GB saving at
+    # N=499, B=1001 — and lets the caller stay per-pair end-to-end
+    # without having to project after the fact.
+    return CCGCounts(
+        counts=bufs.out_hist[:n_pairs, :].astype(np.float64),
+        lags=lags,
+        pairs=pair_arr,
+        n_units=N,
+        bin_size=bin_size,
+        pairing=pairing,
+        exposure=(
+            # Counts are summed over trials, so the exposure they are a
+            # density with respect to is too: one trial's Q_b times the
+            # number of trials.  Using the per-trial value here makes every
+            # density normalization wrong by that factor.
+            _lag_exposure(B, bin_size, d_uniform) * ts.durations.size
+            if use_corrcoef and skip_clipping
+            else None
+        ),
+        expected_factors=(
+            (ec_shape_single, cross_per_pair)
+            if use_corrcoef and skip_clipping
+            else None
+        ),
+        expected_trial=(
+            (ec_weighted, trial_counts, pairing)
+            if use_corrcoef and not skip_clipping
+            else None
+        ),
+        n_spikes=ts.counts.sum(axis=1),
+        durations=bufs.out_dur[:n_pairs].copy(),
+        auto_direct=auto_sum_direct if use_corrcoef else None,
+        auto_paired=auto_sum_paired if use_corrcoef else None,
+    )
 
 
 def ccg_trial_paired(  # noqa: C901
@@ -1628,162 +2119,31 @@ def ccg_trial_paired(  # noqa: C901
     count (rather than 1) matches the cross-correlation context: the
     denominator must normalize the two-sided cross-histogram at lag 0.
     """
-    _validate_binning(bin_size, max_lag)
     _validate_trial_normalize(normalize)
-    ts = trial_segments
-    N = len(ts.segments)
-    half = int(round(max_lag / bin_size))
-    B = 2 * half + 1
-    lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
-
-    pairing = np.asarray(pairing, dtype=np.int64)
-    _validate_pairing_support(ts, pairing)
-
-    # Overlap window per trial.  A no-op under the support contract; kept so
-    # the kernel's clipped and unclipped branches stay interchangeable.
-    overlap_left = np.maximum(-ts.pre, -ts.pre[pairing])
-    overlap_right = np.minimum(ts.post, ts.post[pairing])
-
-    # Use pre-allocated buffers or create new ones
-    if buffers is not None:
-        bufs = buffers
-        if normalize == "corrcoef" and bufs.auto_per_trial.size == 0:
-            raise ValueError(
-                "buffers were built with need_auto=False and cannot serve "
-                'normalize="corrcoef".'
-            )
-        bufs.zero()
-    else:
-        bufs = _CCGBuffers.for_segments(
-            ts,
-            bin_size,
-            max_lag,
-            include_autocorr,
-            pairs=pairs,
-            need_auto=(normalize == "corrcoef"),
-        )
-
-    pair_arr = bufs.pair_arr
-    assert pair_arr is not None
-    n_pairs = pair_arr.shape[0]
-
-    # Skip clipping only when every trial shares the same support, so each
-    # pair's overlap equals that support (e.g., after clip_to_window).
-    skip_clipping = _uniform_support(ts)
-
-    # Single numba call: all pairs × all trials
-    if n_pairs > 0:
-        _ccg_all_pairs_trials(
-            ts.all_spikes,
-            ts.offsets,
-            ts.counts,
-            overlap_left,
-            overlap_right,
-            pair_arr,
-            pairing,
-            bin_size,
-            B,
-            bufs.out_hist,
-            bufs.out_dur,
-            skip_clipping,
-        )
-
-    # Corrcoef normalization
+    result = compute_ccg_counts(
+        trial_segments,
+        pairing,
+        bin_size=bin_size,
+        max_lag=max_lag,
+        include_autocorr=include_autocorr,
+        with_expected=(normalize == "corrcoef"),
+        pairs=pairs,
+        buffers=buffers,
+    )
+    lags = result.lags
     use_corrcoef = normalize == "corrcoef"
-    if use_corrcoef:
-        bufs.auto_per_trial[:] = 0
-        _auto_terms_clipped(
-            ts.all_spikes,
-            ts.offsets,
-            ts.counts,
-            overlap_left,
-            overlap_right,
-            bin_size,
-            bufs.auto_per_trial,
-        )
-        overlap_valid = (overlap_right - overlap_left) > 0
-        auto_masked = bufs.auto_per_trial * overlap_valid[np.newaxis, :]
-        auto_sum_direct = auto_masked.sum(axis=1)
-        auto_sum_paired = auto_masked[:, pairing].sum(axis=1)
+    half = (lags.size - 1) // 2
+    pair_arr = result.pairs
 
-    # Per-trial expected counts: sum_k ec_shape(d_k) * n_i(k) * n_j(σ(k))
-    # Edge correction is a within-trial boundary effect, so must use the
-    # per-trial duration and spike counts, not totals.  When durations are
-    # uniform, ec_shape(d) factors out and we only need the cross-product
-    # sum_k n_i(k) * n_j(σ(k)).
-    if use_corrcoef:
-        trial_counts = ts.counts  # (N, n_trials)
-        overlap_durs = overlap_right - overlap_left  # (n_trials,)
-
-        if skip_clipping:
-            # Uniform durations: ec_shape factors out, precompute once
-            d_uniform = float(overlap_durs[0])
-            ec_shape_single = _expected_counts_shape(B, bin_size, d_uniform)
-            # When ``pairs`` is set, only compute the cross-products
-            # we'll actually read.  Avoids the int64 non-BLAS matmul
-            # (~70 ms at N=499) and the unnecessary N²-cell materialise
-            # when n_pairs ≪ N².  Falls back to dense matmul (with
-            # float-promotion to enable BLAS) when n_pairs ≈ N² or
-            # the sparse intermediate would exceed 256 MB.
-            paired_counts = trial_counts[:, pairing]  # (N, n_trials)
-            sparse_bytes = n_pairs * paired_counts.shape[1] * 8
-            if pairs is not None and sparse_bytes < 256 * 1024 * 1024:
-                cross_per_pair = (
-                    trial_counts[pair_arr[:, 0]].astype(np.float64)
-                    * paired_counts[pair_arr[:, 1]].astype(np.float64)
-                ).sum(axis=1)
-            else:
-                cm_full = (
-                    trial_counts.astype(np.float64)
-                    @ paired_counts.astype(np.float64).T
-                )
-                cross_per_pair = cm_full[pair_arr[:, 0], pair_arr[:, 1]]
-        else:
-            # Non-uniform: ec_weighted[k] = ec_shape(d_k), a (n_trials, B)
-            # array.  Exposure enters only through the overlap duration, and
-            # matched supports make durations repeat, so build one shape per
-            # distinct duration rather than one per trial.
-            n_tr = trial_counts.shape[1]
-            valid = overlap_durs > 0
-            ec_weighted = np.zeros((n_tr, B), dtype=np.float64)
-            uniq_d, inverse = np.unique(
-                overlap_durs[valid], return_inverse=True
-            )
-            if uniq_d.size:
-                shapes = np.stack(
-                    [
-                        _expected_counts_shape(B, bin_size, float(d))
-                        for d in uniq_d
-                    ]
-                )
-                ec_weighted[valid, :] = shapes[inverse]
-
-    # When ``pairs`` is provided, allocate only the per-pair output.
-    # Skipping the (N, N, B) materialisation is a 2 GB saving at
-    # N=499, B=1001 — and lets the caller stay per-pair end-to-end
-    # without having to project after the fact.
-    C = np.zeros((n_pairs, B), dtype=np.float64)
-    for p in range(n_pairs):
-        i, j = pair_arr[p, 0], pair_arr[p, 1]
-        total_dur = bufs.out_dur[p]
-        if total_dur <= 0:
-            continue
-        h = bufs.out_hist[p, :].astype(np.float64)
-        if use_corrcoef:
-            if skip_clipping:
-                h -= ec_shape_single * cross_per_pair[p]
-            else:
-                cross_per_trial = trial_counts[i, :] * trial_counts[j, pairing]
-                h -= ec_weighted.T @ cross_per_trial
-            denom = np.sqrt(abs(auto_sum_direct[i] * auto_sum_paired[j]))
-            if denom > 0:
-                h /= denom
-        # Blank after normalization, not before: subtracting the expected
-        # count from an already-zeroed bin left -E/denom here while the
-        # session path returned 0.
-        if i == j and exclude_zero_lag_autocorr:
-            h[half] = 0.0
-        C[p, :] = h
+    C = legacy_auto_normalized(result) if use_corrcoef else result.counts
+    # A pair with no observed overlap has no estimate; the expected-count
+    # subtraction would otherwise leave -E there.
+    C[result.durations <= 0, :] = 0.0
+    # Blank after normalization, not before: subtracting the expected count
+    # from an already-zeroed bin left -E/denom here while the session path
+    # returned 0.
+    if exclude_zero_lag_autocorr:
+        C[pair_arr[:, 0] == pair_arr[:, 1], half] = 0.0
 
     if pairs is not None:
         return lags, C
@@ -1792,14 +2152,6 @@ def ccg_trial_paired(  # noqa: C901
     # the historical dense semantics: with ``pairs=None`` the pair list is
     # the upper triangle, so the only uncovered cells are the diagonal when
     # ``include_autocorr`` is False.
-    result = CCGCounts(
-        counts=C,
-        lags=lags,
-        pairs=pair_arr,
-        n_units=N,
-        bin_size=bin_size,
-        pairing=pairing,
-    )
     return lags, to_dense(C, result, fill=0.0)
 
 
