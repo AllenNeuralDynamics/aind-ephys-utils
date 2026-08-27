@@ -30,10 +30,15 @@ from aind_ephys_utils.metrics.ccg import (
     covariance_density,
     cross_intensity,
     _window_weights,
+    blank_zero_lag,
     directional_excess,
     legacy_auto_normalized,
     normalized_covariance,
+    excess_density,
     pair_correlation,
+    shift_predictor_baseline,
+    stationary_baseline,
+    surrogate_mean_baseline,
     clip_to_window,
     pair_vec_to_NN,
     to_dense,
@@ -1087,6 +1092,162 @@ class RectangularProjectionTest(unittest.TestCase):
         self.assertEqual(out.dtype, np.float32)
         # float32 halves a projection that is ~1 GB at N=499, B=1001.
         np.testing.assert_allclose(out, vals.reshape(2, 3, 4), rtol=1e-6)
+
+
+@needs_numba
+class BaselineLayerTest(unittest.TestCase):
+    """`baseline=` is an axis separate from the statistic."""
+
+    @staticmethod
+    def _drifting(seed=0, n_trials=40, dur=1.0, base=40.0, swing=25.0):
+        """Two units independent within every trial, sharing a slow drift.
+
+        No pairwise coupling at any lag -- only a rate both units follow
+        from trial to trial, which is what a stationary baseline cannot
+        see and a per-trial one can.
+        """
+        rng = np.random.default_rng(seed)
+        starts = np.arange(n_trials) * (dur + 0.5)
+        epochs = np.column_stack([starts, starts + dur])
+        # Shared across-trial modulation, period 20 trials.
+        rate = base + swing * np.sin(2 * np.pi * np.arange(n_trials) / 20)
+        a, b = [], []
+        for t0, r in zip(starts, rate):
+            a.append(np.sort(rng.uniform(0, dur, rng.poisson(r * dur))) + t0)
+            b.append(np.sort(rng.uniform(0, dur, rng.poisson(r * dur))) + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(a), np.concatenate(b)],
+            epochs,
+            align_times=starts,
+        )
+
+    def _counts(self, ts, **kw):
+        kw.setdefault("bin_size", 0.002)
+        kw.setdefault("max_lag", 0.02)
+        kw.setdefault("include_autocorr", False)
+        return compute_ccg_counts(ts, np.arange(len(ts.durations)), **kw)
+
+    def test_stationary_leaves_shared_modulation_in_the_residual(self):
+        # The plan's claim: `stationary` is a reference, not a correction.
+        # These units have no pairwise relationship, so a baseline that
+        # accounts for their shared drift should leave ~0.
+        cond, stat = [], []
+        for seed in range(12):
+            c = self._counts(self._drifting(seed))
+            lam_i, lam_j = c.rates()
+            scale = float(lam_i[0] * lam_j[0])
+            cond.append(np.mean(excess_density(c)[0]) / scale)
+            stat.append(
+                np.mean(excess_density(c, stationary_baseline(c))[0]) / scale
+            )
+        cond_m, stat_m = float(np.mean(cond)), float(np.mean(stat))
+        # Conditional-uniform: no residual. Stationary: a clear offset.
+        self.assertLess(abs(cond_m), 0.01)
+        self.assertGreater(stat_m, 0.05)
+        self.assertGreater(stat_m, 5 * abs(cond_m))
+
+    def test_stationary_is_rank_one_and_matches_its_definition(self):
+        c = self._counts(self._drifting())
+        base = stationary_baseline(c)
+        lam_i, lam_j = c.rates()
+        np.testing.assert_allclose(
+            base.row(0), c.exposure * lam_i[0] * lam_j[0], rtol=1e-12
+        )
+
+    def test_shift_predictor_is_a_ccg_under_a_shifted_pairing(self):
+        ts = self._drifting()
+        shift = shift_predictor_baseline(
+            ts, bin_size=0.002, max_lag=0.02, include_autocorr=False
+        )
+        direct = compute_ccg_counts(
+            ts,
+            np.roll(np.arange(len(ts.durations)), 1),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+            with_expected=False,
+        )
+        np.testing.assert_array_equal(shift.counts, direct.counts)
+
+    def test_shift_predictor_rejects_a_no_op_offset(self):
+        ts = self._drifting(n_trials=40)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            shift_predictor_baseline(
+                ts, offset=40, bin_size=0.002, max_lag=0.02
+            )
+
+    def test_a_baseline_may_be_another_ccg_or_a_plain_array(self):
+        ts = self._drifting()
+        c = self._counts(ts)
+        shift = shift_predictor_baseline(
+            ts, bin_size=0.002, max_lag=0.02, include_autocorr=False
+        )
+        # A CCGCounts works directly; so does its array.
+        np.testing.assert_allclose(
+            excess_density(c, shift), excess_density(c, shift.counts)
+        )
+
+    def test_surrogate_mean_averages_in_count_space(self):
+        ts = self._drifting()
+        rng = np.random.default_rng(1)
+        n = len(ts.durations)
+        pairings = [rng.permutation(n) for _ in range(4)]
+        got = surrogate_mean_baseline(
+            ts, pairings, bin_size=0.002, max_lag=0.02, include_autocorr=False
+        )
+        want = np.mean(
+            [
+                compute_ccg_counts(
+                    ts,
+                    pr,
+                    bin_size=0.002,
+                    max_lag=0.02,
+                    include_autocorr=False,
+                    with_expected=False,
+                ).counts
+                for pr in pairings
+            ],
+            axis=0,
+        )
+        np.testing.assert_allclose(got, want)
+
+    def test_surrogate_mean_rejects_no_pairings(self):
+        with self.assertRaisesRegex(ValueError, "empty"):
+            surrogate_mean_baseline(self._drifting(), [])
+
+
+class BlankZeroLagTest(unittest.TestCase):
+    """Blanking is a presentation step, after normalization."""
+
+    @staticmethod
+    def _counts():
+        pairs = np.array([[0, 0], [0, 1], [1, 1]])
+        vals = np.ones((3, 5))
+        return vals, CCGCounts(
+            counts=vals,
+            lags=np.arange(5, dtype=np.float64),
+            pairs=pairs,
+            n_units=2,
+            bin_size=1.0,
+        )
+
+    def test_only_self_pairs_are_blanked(self):
+        vals, counts = self._counts()
+        out = blank_zero_lag(vals, counts)
+        self.assertEqual(out[0, 2], 0.0)
+        self.assertEqual(out[2, 2], 0.0)
+        self.assertEqual(out[1, 2], 1.0)
+
+    def test_it_does_not_touch_the_input_by_default(self):
+        vals, counts = self._counts()
+        blank_zero_lag(vals, counts)
+        self.assertEqual(vals[0, 2], 1.0)
+
+    def test_out_allows_in_place(self):
+        vals, counts = self._counts()
+        got = blank_zero_lag(vals, counts, out=vals)
+        self.assertIs(got, vals)
+        self.assertEqual(vals[0, 2], 0.0)
 
 
 if __name__ == "__main__":

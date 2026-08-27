@@ -1893,6 +1893,31 @@ def directional_excess(
         return np.asarray(totals / n_i)
 
 
+def blank_zero_lag(
+    values: np.ndarray, counts: CCGCounts, *, out: np.ndarray | None = None
+) -> np.ndarray:
+    """Zero the centre bin of self-pairs.
+
+    A presentation policy, not part of the estimate.  That bin holds the
+    count of spike pairs within ``+- bin_size / 2``, which is a real
+    refractory measure; it is blanked because it otherwise dominates an
+    autocorrelogram's y-axis, and blanking it here rather than in the
+    kernel keeps it recoverable.
+
+    Apply it *after* normalizing.  Subtracting expected counts from an
+    already-zeroed bin leaves ``-E / denom`` rather than zero -- which is
+    why :func:`compute_ccg_counts` neither takes this option nor could
+    honour it: normalization is a later step.
+    """
+    res = out
+    if res is None:
+        res = np.array(values, copy=True)
+    elif res is not values:
+        res[...] = values
+    res[counts.pairs[:, 0] == counts.pairs[:, 1], res.shape[1] // 2] = 0.0
+    return res
+
+
 def to_dense(
     values: np.ndarray | None,
     counts: CCGCounts,
@@ -2279,8 +2304,6 @@ def ccg_trial_paired(  # noqa: C901
     )
     lags = result.lags
     use_corrcoef = normalize == "corrcoef"
-    half = (lags.size - 1) // 2
-    pair_arr = result.pairs
 
     C = legacy_auto_normalized(result) if use_corrcoef else result.counts
     # A pair with no observed overlap has no estimate; the expected-count
@@ -2290,7 +2313,7 @@ def ccg_trial_paired(  # noqa: C901
     # from an already-zeroed bin left -E/denom here while the session path
     # returned 0.
     if exclude_zero_lag_autocorr:
-        C[pair_arr[:, 0] == pair_arr[:, 1], half] = 0.0
+        blank_zero_lag(C, result, out=C)
 
     if pairs is not None:
         return lags, C
