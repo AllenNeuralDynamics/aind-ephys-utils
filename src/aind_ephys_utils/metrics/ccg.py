@@ -600,21 +600,24 @@ def ccg_between_sets_sparse(  # noqa: C901
         )
         nspikes_s1 = np.array([s.size for s in S1])
         nspikes_s2 = np.array([s.size for s in S2])
-        C = np.zeros((M, N, B), dtype=np.float64)
-        p = 0
-        for i in range(M):
-            for j in range(N):
-                h = out_buf[p, :] - ec_shape * nspikes_s1[i] * nspikes_s2[j]
-                denom = np.sqrt(abs(auto_s1[i] * auto_s2[j]))
-                C[i, j, :] = h / denom if denom > 0 else 0.0
-                p += 1
+        cross = (
+            nspikes_s1[pair_list[:, 0]] * nspikes_s2[pair_list[:, 1]]
+        ).astype(np.float64)
+        result = _between_counts(out_buf, pair_list, M, N, lags, bin_size, T)
+        result.expected_factors = (ec_shape, cross)
+        result.auto_direct = auto_s1
+        result.auto_paired = auto_s2
+        C = to_dense(
+            legacy_auto_normalized(result),
+            result,
+            fill=0.0,
+            dtype=np.float64,
+        )
     else:
-        C = np.zeros((M, N, B), dtype=np.float32)
-        p = 0
-        for i in range(M):
-            for j in range(N):
-                C[i, j, :] = out_buf[p, :].astype(np.float32)
-                p += 1
+        result = _between_counts(out_buf, pair_list, M, N, lags, bin_size, T)
+        C = to_dense(
+            out_buf.astype(np.float32), result, fill=0.0, dtype=np.float32
+        )
         _apply_normalization(C, lags, normalize, T, S1, bin_size)
 
     return lags, C
@@ -623,6 +626,32 @@ def ccg_between_sets_sparse(  # noqa: C901
 # ---------------------------------------------------------------------------
 # All-pairs CCG
 # ---------------------------------------------------------------------------
+
+
+def _between_counts(
+    out_buf: np.ndarray,
+    pair_arr: np.ndarray,
+    n_rows: int,
+    n_cols: int,
+    lags: np.ndarray,
+    bin_size: float,
+    dur: float,
+) -> CCGCounts:
+    """Wrap between-sets histograms as a rectangular :class:`CCGCounts`.
+
+    ``n_spikes`` is left unset: rows and columns index two different unit
+    lists, so a single per-unit array cannot serve both, and a wrong answer
+    from :meth:`CCGCounts.rates` would be worse than its absence.
+    """
+    return CCGCounts(
+        counts=out_buf,
+        lags=lags,
+        pairs=pair_arr,
+        n_units=(n_rows, n_cols),
+        bin_size=bin_size,
+        exposure=_lag_exposure(lags.size, bin_size, dur),
+        durations=np.full(pair_arr.shape[0], dur, dtype=np.float64),
+    )
 
 
 def _scatter_and_normalize(
@@ -638,46 +667,48 @@ def _scatter_and_normalize(
     include_autocorr: bool,
     S: list[np.ndarray],
 ) -> np.ndarray:
-    """Scatter pair CCG histograms into (N, N, B) and apply normalization."""
+    """Normalize pair CCG histograms and project them into ``(N, N, B)``.
+
+    Session-wide, so there is no trial pairing: ``sigma`` is the identity,
+    :meth:`CCGCounts.mirror_is_defined` holds, and the flip rule is exact.
+
+    Only the mirror-*safe* normalization happens here.  ``"counts"`` and
+    ``"conditional"`` divide by the *source* unit's spike count, so
+    ``C[i, j]`` and ``C[j, i]`` take different divisors and must be applied
+    after projection -- see :func:`_apply_normalization`.
+    """
     use_corrcoef = normalize == "corrcoef"
-    ec_shape: np.ndarray | None = None
-    auto_terms: np.ndarray | None = None
-    nspikes: np.ndarray | None = None
+    nspikes = np.array([x.size for x in S])
+    counts = CCGCounts(
+        counts=out_buf,
+        lags=(np.arange(-half, half + 1) * bin_size).astype(np.float64),
+        pairs=pair_list_arr,
+        n_units=N,
+        bin_size=bin_size,
+        exposure=_lag_exposure(B, bin_size, T),
+        n_spikes=nspikes,
+        durations=np.full(pair_list_arr.shape[0], T, dtype=np.float64),
+    )
     if use_corrcoef:
         ec_shape = _expected_counts_shape(B, bin_size, T)
-        auto_terms = np.array(
-            [_corrected_auto_counts(s, bin_size, T) for s in S]
-        )
-        nspikes = np.array([s.size for s in S])
+        cross = nspikes[pair_list_arr[:, 0]] * nspikes[pair_list_arr[:, 1]]
+        counts.expected_factors = (ec_shape, cross.astype(np.float64))
+        auto = np.array([_corrected_auto_counts(x, bin_size, T) for x in S])
+        counts.auto_direct = auto
+        counts.auto_paired = auto
+        values = legacy_auto_normalized(counts)
+    else:
+        values = out_buf.astype(np.float32)
 
-    C = np.zeros((N, N, B), dtype=np.float64 if use_corrcoef else np.float32)
+    if exclude_zero_lag_autocorr:
+        values = blank_zero_lag(values, counts, out=values)
 
-    p = 0
-    for i in range(N):
-        j_start = i if include_autocorr else i + 1
-        for j in range(j_start, N):
-            if use_corrcoef and ec_shape is not None and nspikes is not None:
-                h = out_buf[p, :] - ec_shape * nspikes[i] * nspikes[j]
-            else:
-                h = out_buf[p, :].astype(np.float32)
-            if use_corrcoef and auto_terms is not None:
-                denom = np.sqrt(abs(auto_terms[i] * auto_terms[j]))
-                if denom > 0:
-                    h = h / denom
-
-            # After normalization, matching the trial paths: one meaning,
-            # one place.
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
-
-            C[i, j, :] = h
-            if i != j:
-                # No trial pairing here, so sigma is the identity and the
-                # mirror is exact.  The diagonal is already symmetric.
-                C[j, i, :] = h[::-1]
-            p += 1
-
-    return C
+    return to_dense(
+        values,
+        counts,
+        fill=0.0,
+        dtype=np.float64 if use_corrcoef else np.float32,
+    )
 
 
 def ccg_allpairs_sparse(
