@@ -1328,5 +1328,102 @@ class BaselineSeparationTest(unittest.TestCase):
         self.assertLess(abs(np.mean(shift)), 0.05)
 
 
+@needs_numba
+class SurrogateNullTest(unittest.TestCase):
+    """Subtracting E lets an unrestricted derangement reject slow drift.
+
+    Plan acceptance tests 15 and 16.  Kept small -- the effect is large
+    enough that a few seeds separate the arms cleanly, and this runs in
+    the unit suite.
+    """
+
+    BIN, MAXLAG, N_TRIALS = 0.002, 0.02, 60
+
+    @classmethod
+    def _drifting(cls, seed, coupling=0.0, dur=1.0):
+        """Rates co-vary across trials; optional real 5 ms coupling."""
+        rng = np.random.default_rng(seed)
+        n = cls.N_TRIALS
+        starts = np.arange(n) * (dur + 0.5)
+        epochs = np.column_stack([starts, starts + dur])
+        a, b = [], []
+        for k, t0 in enumerate(starts):
+            rate = 40 + 25 * np.sin(2 * np.pi * k / 20)
+            si = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            sj = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            driven = si[rng.random(si.size) < coupling] + 0.005
+            a.append(si + t0)
+            b.append(np.sort(np.concatenate([sj, driven[driven < dur]])) + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(a), np.concatenate(b)],
+            epochs,
+            align_times=starts,
+        )
+
+    @staticmethod
+    def _derangement(rng, n):
+        while True:
+            p = rng.permutation(n)
+            if np.all(p != np.arange(n)):
+                return p
+
+    @classmethod
+    def _statistic(cls, ts, pairing, subtract_expected):
+        counts = compute_ccg_counts(
+            ts,
+            pairing,
+            bin_size=cls.BIN,
+            max_lag=cls.MAXLAG,
+            include_autocorr=False,
+            with_expected=subtract_expected,
+        )
+        if not subtract_expected:
+            return counts.counts[0]
+        return counts.counts[0] - counts.expected_row(0)
+
+    @classmethod
+    def _z(cls, ts, seed, subtract_expected, n_surrogates=40):
+        """Mean per-bin z against an unrestricted derangement null."""
+        rng = np.random.default_rng(seed)
+        n = cls.N_TRIALS
+        obs = cls._statistic(ts, np.arange(n), subtract_expected)
+        surr = np.stack(
+            [
+                cls._statistic(ts, cls._derangement(rng, n), subtract_expected)
+                for _ in range(n_surrogates)
+            ]
+        )
+        sd = surr.std(axis=0, ddof=1)
+        sd[sd == 0] = np.inf
+        return float(np.mean((obs - surr.mean(axis=0)) / sd))
+
+    def test_raw_counts_alone_report_the_drift_as_an_effect(self):
+        # The false positive that motivates constrained shuffles: no
+        # fine-timescale coupling, but the rates co-vary.
+        z = np.mean(
+            [self._z(self._drifting(s), 100 + s, False) for s in range(3)]
+        )
+        self.assertGreater(z, 1.5)
+
+    def test_subtracting_expected_removes_it_without_constraining_sigma(self):
+        # E is pairing-dependent, so it tracks the count covariance on both
+        # sides of the comparison rather than cancelling.
+        z = np.mean(
+            [self._z(self._drifting(s), 200 + s, True) for s in range(3)]
+        )
+        self.assertLess(abs(z), 0.6)
+
+    def test_a_real_coupling_still_survives_the_subtraction(self):
+        # The property a constrained shuffle gives up: E removes only the
+        # count-level covariance, leaving fine-timescale structure intact.
+        z = np.mean(
+            [
+                self._z(self._drifting(s, coupling=0.25), 300 + s, True)
+                for s in range(3)
+            ]
+        )
+        self.assertGreater(z, 1.2)
+
+
 if __name__ == "__main__":
     unittest.main()

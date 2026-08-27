@@ -20,6 +20,7 @@ near-duplicate carrying every defect below; it is the copy
 | `[-1, 1]` claim | Drop it. The estimand is a density; the bound is a category error. |
 | Pearson / kernel correlation | Defer. Different estimand, no current requirement. |
 | Primary effect size | Integrated directional excess `eps(W)`; density normalizations are shape statistics. |
+| Surrogate inference | Raw counts **minus the pairing-dependent `E`**, compared against an unrestricted derangement null. Constrained shuffles are a secondary tool, not the remedy for slow drift. |
 | `corrcoef` name | Deprecate → `legacy_auto_normalized`, alias retained one release. |
 | Baseline naming | `conditional_uniform` for the current per-trial form; reserve `stationary` for the global `lam_i lam_j Q_b`. |
 | Baseline default | Explicit in the library; `shift_predictor` at the pipeline level only. |
@@ -440,16 +441,78 @@ Move surrogate inference to raw-count space with online statistics.
 - Do not normalize each surrogate. `_scatter` currently does.
 - Welford per `(pair, lag)`, or reduce each shuffle to a scalar window
   statistic immediately and keep only the scalar null.
-- The analytic `E` is not merely cancelling — it becomes **unnecessary**, since
-  `E` is itself pairing-dependent through `sum_k n_i(k) n_j(sigma(k))` and the
-  empirical null already contains that structure.
+- **Keep the analytic `E`; it is what makes an unrestricted derangement
+  sufficient.** An earlier draft of this plan called `E` *unnecessary* on the
+  grounds that the empirical null already contains the per-trial count
+  structure. That holds only when the shuffle is constrained. Measured, and
+  see "Subtracting `E` versus constraining the shuffle" below: keeping `E` and
+  deranging globally rejects slow drift *better* than a block shuffle does,
+  and without the block shuffle's loss of sensitivity.
+
+  Subtracting `E` is not normalizing — no auto terms, no `sqrt`, no
+  pairing-dependent denominator — so Welford in count space is unaffected. The
+  pairing-dependent part is one small matmul on trial counts that never touches
+  spikes: **0.036 ms per surrogate, ~4% of the surrogate's cost**, and
+  `with_expected=True` was not measurably slower than `False` end to end
+  (0.79 vs 0.85 ms).
 - **Precondition: the support contract, not a global common window.** Every
   surrogate pairing must satisfy matched source-target support. When that holds,
   exposure is invariant under every allowed permutation automatically, so
   raw-count comparison is valid without further checks. Validate the contract
   rather than inferring safety from the fact that trials are paired.
 - **Add the shuffle modes** above, with `global` retained as the default and
-  the scheme recorded in surrogate provenance.
+  the scheme recorded in surrogate provenance. With `E` retained, the
+  constrained modes are no longer the remedy for slow drift; they cover the
+  narrower case where the non-stationarity is in the fine-timescale structure
+  rather than in the rates, which `E` cannot reach.
+- **Split `with_expected`.** It currently gates the expected-count term *and*
+  the auto terms together. This design needs only the former, so the cheap
+  thing should be cheap explicitly rather than by accident.
+
+### Subtracting `E` versus constraining the shuffle
+
+`E_sigma = s_b * sum_k n_i(k) n_j(sigma(k))` is pairing-dependent, so it
+*tracks* the across-trial count covariance rather than cancelling it: identity
+gives the correlated sum, a derangement the uncorrelated one. Subtracting it
+removes the drift contribution from the observation and from every surrogate
+alike, so the comparison is clean without constraining `sigma` at all.
+
+A constrained shuffle instead puts the drift *into* the null. That works, but
+it cannot distinguish slow drift from slow genuine coupling, so it nulls both.
+
+Mean per-bin z, 60 trials, 5 seeds, 60 surrogates:
+
+| fixture | raw + global | raw + block(10) | **E-sub + global** |
+|---|---|---|---|
+| drift, no coupling | 2.72 | 0.76 | **0.11** |
+| drift + real 5 ms coupling | 4.73 | 2.01 | 2.02 |
+| time-locked, no coupling | -0.14 | -0.17 | -0.14 |
+| time-locked + real coupling | 1.28 | 0.98 | **1.29** |
+
+Two things to read off it. `E`-subtraction rejects the drift false positive
+better than the block shuffle (0.11 against 0.76), and it keeps full
+sensitivity to a real coupling where the block shuffle loses about a quarter
+of it (1.29 against 0.98). The `drift + coupling` row is convergent evidence
+that ~2.0 is the true signal level: `E`-sub and block agree there, while
+`raw + global` reports 4.73, inflated by the drift it failed to remove.
+
+**The two mechanisms are complementary, not alternatives.**
+
+| confound | handled by |
+|---|---|
+| across-trial count covariance | the analytic `E` — exactly, at no sensitivity cost |
+| within-trial time-locked co-modulation | the surrogate null — any `sigma != identity` preserves both PSTHs |
+
+`E` cannot see the second: conditioning on per-trial counts says nothing about
+*when* in a trial those spikes fall. The null cannot see the first unless
+`sigma` is constrained. Together, with an unrestricted derangement, both are
+covered and nothing is given up.
+
+**Caveat.** These are synthetic fixtures — one drift shape at one strength,
+one coupling, 60 trials. The reason to believe the result is the algebra, not
+the fixture; confirm on a real session before changing the pipeline. The
+support contract still gates every non-identity pairing either way, so
+`clip_to_window` remains a precondition.
 
 ---
 
@@ -523,10 +586,14 @@ Beyond `tests/test_ccg_regression.py`:
     block boundaries, and respect max displacement
 13. circular-offset inversion agrees with the `sigma^-1` flip rule
 14. surrogate metadata records the shuffle scheme and its parameters
-15. **statistical:** two uncoupled units with shared slow drift show an
-    apparent effect under global permutation, substantially reduced under a
-    block-constrained one; an injected same-trial fast coupling remains
-    detectable under the constrained null
+15. **statistical:** two units with no fine-timescale coupling but shared slow
+    drift show an apparent effect under global permutation in raw-count space,
+    substantially reduced under a block-constrained one; an injected
+    same-trial fast coupling remains detectable under the constrained null
+16. **statistical:** the same pair, with `E` subtracted, shows no apparent
+    effect under an *unrestricted* derangement, and the injected coupling is
+    detected at full strength — i.e. `E`-subtraction dominates the constrained
+    shuffle on both axes
 
 ---
 
