@@ -19,31 +19,35 @@ import xarray as xr
 from aind_ephys_utils.metrics.ccg import (
     CCGCounts,
     SurrogateTest,
-    TrialShuffle,
     TrialSegments,
+    TrialShuffle,
     _build_csr,
     _expected_counts_shape,
     _lag_exposure,
+    _uniform_support,
+    _window_weights,
+    blank_zero_lag,
     ccg,
     ccg_between_sets_sparse,
     ccg_trial_paired,
     clip_spikes_to_trials,
+    clip_to_window,
     compute_ccg_counts,
     covariance_density,
     cross_intensity,
-    _window_weights,
-    blank_zero_lag,
+)
+from aind_ephys_utils.metrics.ccg import derangements as _module_derangements
+from aind_ephys_utils.metrics.ccg import (
     directional_excess,
+    excess_density,
     legacy_auto_normalized,
     normalized_covariance,
-    excess_density,
     pair_correlation,
+    pair_vec_to_NN,
     shift_predictor_baseline,
     stationary_baseline,
-    surrogate_null,
     surrogate_mean_baseline,
-    clip_to_window,
-    pair_vec_to_NN,
+    surrogate_null,
     to_dense,
 )
 
@@ -1607,6 +1611,75 @@ class SurrogateTestApiTest(unittest.TestCase):
         # They belong to the legacy statistic; count-space comparison never
         # uses them, and they are a third of the cost at many units.
         self.assertIsInstance(self._run(self._fixture(0), n=3), SurrogateTest)
+
+
+@needs_numba
+class SurrogateDenominatorTest(unittest.TestCase):
+    """The legacy denominator does not vary with the trial pairing.
+
+    ``auto_sum_paired`` sums each unit's auto terms over *all* trials
+    reindexed by sigma, and a sum is permutation-invariant.  Under the
+    support contract the overlap mask is sigma-independent too, so the
+    whole denominator is a per-pair constant.  That is why comparing
+    corrcoef-normalized surrogates is equivalent to comparing
+    ``H - E`` in count space: the constant cancels in any z-score.
+    """
+
+    @staticmethod
+    def _denominators(ts, pairings):
+        out = []
+        for pairing in pairings:
+            counts = compute_ccg_counts(
+                ts,
+                pairing,
+                bin_size=0.01,
+                max_lag=0.05,
+                include_autocorr=False,
+            )
+            out.append(
+                np.sqrt(abs(counts.auto_direct[0] * counts.auto_paired[1]))
+            )
+        return np.array(out)
+
+    def test_invariant_under_uniform_support(self):
+        n = 20
+        rng = np.random.default_rng(0)
+        starts = np.arange(n) * 2.0
+        epochs = np.column_stack([starts, starts + 1.0])
+        trains = [
+            np.sort(rng.uniform(0, n * 2.0, rng.poisson(30.0 * n * 2.0)))
+            for _ in range(3)
+        ]
+        ts = clip_spikes_to_trials(trains, epochs, align_times=starts)
+        pairings = [np.arange(n)] + list(
+            _module_derangements(n, 4, np.random.default_rng(1))
+        )
+        d = self._denominators(ts, pairings)
+        self.assertLess((d.max() - d.min()) / d.mean(), 1e-12)
+
+    def test_invariant_under_matched_mixed_support(self):
+        # Two support classes, so the overlap mask is live rather than
+        # trivially all-true.
+        n = 8
+        rng = np.random.default_rng(5)
+        starts = np.arange(n) * 3.0
+        epochs = np.column_stack([starts, starts + 1.0])
+        align = starts + np.where(np.arange(n) % 2 == 0, 0.2, 0.8)
+        trains = [
+            np.sort(rng.uniform(0, n * 3.0, rng.poisson(30.0 * n * 3.0)))
+            for _ in range(3)
+        ]
+        ts = clip_spikes_to_trials(trains, epochs, align_times=align)
+        self.assertFalse(_uniform_support(ts))
+        d = self._denominators(
+            ts,
+            [
+                np.arange(n),
+                np.array([2, 3, 0, 1, 6, 7, 4, 5]),
+                np.array([6, 7, 4, 5, 2, 3, 0, 1]),
+            ],
+        )
+        self.assertLess((d.max() - d.min()) / d.mean(), 1e-12)
 
 
 if __name__ == "__main__":

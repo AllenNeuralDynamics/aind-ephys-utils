@@ -26,6 +26,7 @@ import numpy as np
 from .ccg import (
     TrialSegments,
     ccg_trial_surrogates,
+    TrialShuffle,
     derangements,
     monte_carlo_pvalue,
     pair_vec_to_NN,
@@ -124,6 +125,7 @@ def run_surrogates(
     max_lag: float,
     normalize: str,
     label: str = "",
+    shuffle: TrialShuffle | None = None,
 ) -> np.ndarray:
     """Run derangement surrogates, return a ``(n_surr, n_pairs)`` array.
 
@@ -152,6 +154,14 @@ def run_surrogates(
         CCG kernel parameters.
     label
         Prefix for progress log messages.
+    shuffle
+        Surrogate shuffle scheme.  Defaults to unrestricted derangements,
+        which is the right null here: the ``corrcoef`` statistic already
+        subtracts the pairing-dependent expected counts, so across-trial
+        rate covariance is accounted for without constraining the shuffle.
+        Pass a constrained scheme only for non-stationarity in the
+        fine-timescale structure, which no expected-count term can reach --
+        and note it costs sensitivity to genuinely slow coupling.
 
     Returns
     -------
@@ -164,7 +174,11 @@ def run_surrogates(
     for k, peak_per_pair in enumerate(
         ccg_trial_surrogates(
             trial_segs,
-            derangements(n_trials, n_surr, rng),
+            (
+                derangements(n_trials, n_surr, rng)
+                if shuffle is None
+                else shuffle.draw(n_surr, rng)
+            ),
             bin_size=bin_size,
             max_lag=max_lag,
             normalize=normalize,
@@ -253,6 +267,7 @@ def run_two_stage_mc(  # noqa: C901
     normalize: str,
     rng: np.random.Generator,
     fdr_alpha: float,
+    shuffle: TrialShuffle | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, int, np.ndarray]:
     """Two-stage Monte Carlo significance testing on pre-filtered pairs.
 
@@ -323,6 +338,7 @@ def run_two_stage_mc(  # noqa: C901
         max_lag=max_lag,
         normalize=normalize,
         label="[screen] ",
+        shuffle=shuffle,
     )
 
     raw_peak_pf = raw_peak_val[prefilter_pairs[:, 0], prefilter_pairs[:, 1]]
@@ -384,6 +400,7 @@ def run_two_stage_mc(  # noqa: C901
             max_lag=max_lag,
             normalize=normalize,
             label="[refine] ",
+            shuffle=shuffle,
         )
 
         sub_surr_screen = surr_screen[:, cand_idx_in_pf]
