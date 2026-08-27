@@ -10,7 +10,9 @@ from __future__ import annotations
 from .ccg import (
     CCGCounts,
     NN_to_pair_vec,
+    SurrogateTest,
     TrialSegments,
+    TrialShuffle,
     blank_zero_lag,
     ccg,
     ccg_allpairs_sparse,
@@ -39,6 +41,7 @@ from .ccg import (
     smooth_ccgs,
     stationary_baseline,
     surrogate_mean_baseline,
+    surrogate_null,
     to_dense,
 )
 from .connectivity import (
@@ -67,6 +70,9 @@ __all__ = [
     "smooth_ccgs",
     "rescale_ccgs",
     "CCGCounts",
+    "TrialShuffle",
+    "SurrogateTest",
+    "surrogate_null",
     "stationary_baseline",
     "shift_predictor_baseline",
     "surrogate_mean_baseline",

@@ -18,6 +18,8 @@ import xarray as xr
 
 from aind_ephys_utils.metrics.ccg import (
     CCGCounts,
+    SurrogateTest,
+    TrialShuffle,
     TrialSegments,
     _build_csr,
     _expected_counts_shape,
@@ -38,6 +40,7 @@ from aind_ephys_utils.metrics.ccg import (
     pair_correlation,
     shift_predictor_baseline,
     stationary_baseline,
+    surrogate_null,
     surrogate_mean_baseline,
     clip_to_window,
     pair_vec_to_NN,
@@ -1423,6 +1426,187 @@ class SurrogateNullTest(unittest.TestCase):
             ]
         )
         self.assertGreater(z, 1.2)
+
+
+class TrialShuffleTest(unittest.TestCase):
+    """Shuffle schemes are valid derangements and carry their provenance."""
+
+    def test_every_mode_yields_derangements(self):
+        rng = np.random.default_rng(0)
+        ident = np.arange(24)
+        for mode, kw in [
+            ("global", {}),
+            ("within_block", {"block_size": 6}),
+            ("circular_offset", {}),
+        ]:
+            with self.subTest(mode=mode):
+                for pairing in TrialShuffle(24, mode=mode, **kw).draw(20, rng):
+                    self.assertEqual(sorted(pairing.tolist()), ident.tolist())
+                    self.assertTrue(np.all(pairing != ident))
+
+    def test_within_block_never_crosses_a_boundary(self):
+        rng = np.random.default_rng(1)
+        shuffle = TrialShuffle(24, mode="within_block", block_size=6)
+        for pairing in shuffle.draw(20, rng):
+            self.assertTrue(np.all(pairing // 6 == np.arange(24) // 6))
+
+    def test_a_trailing_singleton_block_is_absorbed(self):
+        # A block of one trial has no derangement, so it must join the
+        # block before it rather than silently keeping a fixed point.
+        rng = np.random.default_rng(2)
+        shuffle = TrialShuffle(13, mode="within_block", block_size=4)
+        self.assertEqual([b.size for b in shuffle._blocks()], [4, 4, 5])
+        for pairing in shuffle.draw(10, rng):
+            self.assertTrue(np.all(pairing != np.arange(13)))
+
+    def test_provenance_records_the_scheme(self):
+        prov = TrialShuffle(20, mode="within_block", block_size=5).provenance()
+        self.assertEqual(prov["surrogate_method"], "trial_permutation")
+        self.assertEqual(prov["shuffle_scope"], "within_block")
+        self.assertEqual(prov["block_size"], 5)
+
+    def test_invalid_schemes_are_refused(self):
+        with self.assertRaisesRegex(NotImplementedError, "deferred"):
+            TrialShuffle(10, mode="local")
+        with self.assertRaisesRegex(ValueError, "unknown shuffle mode"):
+            TrialShuffle(10, mode="wiggle")
+        with self.assertRaisesRegex(ValueError, "requires block_size"):
+            TrialShuffle(10, mode="within_block")
+        with self.assertRaisesRegex(ValueError, ">= 2"):
+            TrialShuffle(10, mode="within_block", block_size=1)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            TrialShuffle(10, mode="circular_offset", offset=10)
+
+    def test_a_fixed_offset_is_not_random(self):
+        self.assertFalse(
+            TrialShuffle(10, mode="circular_offset", offset=1).is_random
+        )
+        self.assertTrue(TrialShuffle(10, mode="circular_offset").is_random)
+        self.assertTrue(TrialShuffle(10).is_random)
+
+
+@needs_numba
+class SurrogateTestApiTest(unittest.TestCase):
+    """Count-space inference against a trial-permutation null."""
+
+    KW = dict(bin_size=0.002, max_lag=0.02, include_autocorr=False)
+    N_TRIALS = 60
+
+    @classmethod
+    def _fixture(cls, seed, coupling=0.0, dur=1.0):
+        rng = np.random.default_rng(seed)
+        n = cls.N_TRIALS
+        starts = np.arange(n) * (dur + 0.5)
+        epochs = np.column_stack([starts, starts + dur])
+        a, b = [], []
+        for k, t0 in enumerate(starts):
+            rate = 40 + 25 * np.sin(2 * np.pi * k / 20)
+            si = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            sj = np.sort(rng.uniform(0, dur, rng.poisson(rate * dur)))
+            driven = si[rng.random(si.size) < coupling] + 0.005
+            a.append(si + t0)
+            b.append(np.sort(np.concatenate([sj, driven[driven < dur]])) + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(a), np.concatenate(b)],
+            epochs,
+            align_times=starts,
+        )
+
+    @staticmethod
+    def _peak(values, counts):
+        window = (counts.lags >= 0.002) & (counts.lags < 0.012)
+        return values[:, window].max(axis=1)
+
+    def _run(self, ts, mode="global", n=40, seed=7, **kw):
+        shuffle = TrialShuffle(self.N_TRIALS, mode=mode, **kw)
+        return surrogate_null(
+            ts,
+            shuffle,
+            n,
+            np.random.default_rng(seed),
+            reduce=self._peak,
+            **self.KW,
+        )
+
+    def test_a_drifting_null_pair_is_not_significant(self):
+        z = np.mean(
+            [
+                float(self._run(self._fixture(s), seed=10 + s).z()[0])
+                for s in range(3)
+            ]
+        )
+        self.assertLess(abs(z), 1.5)
+
+    def test_a_real_coupling_is_detected(self):
+        result = self._run(self._fixture(0, coupling=0.25))
+        self.assertGreater(float(result.z()[0]), 5.0)
+        self.assertLessEqual(float(result.p_value()[0]), 1.0 / 41.0 + 1e-12)
+
+    def test_welford_matches_a_direct_computation(self):
+        result = self._run(self._fixture(0), n=25)
+        np.testing.assert_allclose(
+            result.mean, result.draws.mean(axis=0), rtol=1e-10
+        )
+        np.testing.assert_allclose(
+            result.sd, result.draws.std(axis=0, ddof=1), rtol=1e-10
+        )
+
+    def test_p_values_need_the_draws(self):
+        shuffle = TrialShuffle(self.N_TRIALS)
+        result = surrogate_null(
+            self._fixture(0),
+            shuffle,
+            5,
+            np.random.default_rng(0),
+            **self.KW,
+        )
+        self.assertIsNone(result.draws)
+        with self.assertRaisesRegex(ValueError, "need the surrogate draws"):
+            result.p_value()
+        # Welford still works without them, over the full (pair, lag) grid.
+        self.assertEqual(result.mean.shape, result.observed.shape)
+
+    def test_p_value_is_never_zero(self):
+        result = self._run(self._fixture(0, coupling=0.5), n=10)
+        self.assertGreater(float(result.p_value()[0]), 0.0)
+
+    def test_a_deterministic_shuffle_is_refused(self):
+        # Every draw identical means zero spread and universal
+        # significance; that must fail loudly rather than report p.
+        shuffle = TrialShuffle(self.N_TRIALS, mode="circular_offset", offset=1)
+        with self.assertRaisesRegex(ValueError, "deterministic"):
+            surrogate_null(
+                self._fixture(0),
+                shuffle,
+                20,
+                np.random.default_rng(0),
+                reduce=self._peak,
+                **self.KW,
+            )
+
+    def test_the_scheme_travels_with_the_result(self):
+        result = self._run(
+            self._fixture(0), mode="within_block", block_size=10
+        )
+        self.assertEqual(result.provenance["shuffle_scope"], "within_block")
+        self.assertEqual(result.provenance["block_size"], 10)
+        self.assertEqual(result.provenance["n_surrogates"], 40)
+        self.assertTrue(result.provenance["subtract_expected"])
+
+    def test_a_mismatched_trial_count_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "built for"):
+            surrogate_null(
+                self._fixture(0),
+                TrialShuffle(7),
+                5,
+                np.random.default_rng(0),
+                **self.KW,
+            )
+
+    def test_auto_terms_are_off_by_default(self):
+        # They belong to the legacy statistic; count-space comparison never
+        # uses them, and they are a third of the cost at many units.
+        self.assertIsInstance(self._run(self._fixture(0), n=3), SurrogateTest)
 
 
 if __name__ == "__main__":

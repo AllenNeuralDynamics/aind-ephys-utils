@@ -2031,6 +2031,7 @@ def compute_ccg_counts(  # noqa: C901
     max_lag: float = 0.1,
     include_autocorr: bool = True,
     with_expected: bool = True,
+    with_auto: bool | None = None,
     pairs: np.ndarray | None = None,
     buffers: _CCGBuffers | None = None,
 ) -> CCGCounts:
@@ -2059,8 +2060,15 @@ def compute_ccg_counts(  # noqa: C901
     include_autocorr
         Whether to include the ``(i, i)`` self-pairs in the pair list.
     with_expected
-        Compute the expected-count and auto terms.  ``False`` returns raw
-        counts alone, which is all a count-space surrogate comparison needs.
+        Compute the expected-count term ``E_b``.  Cheap -- one matmul on
+        per-trial spike counts that never touches spikes -- and worth
+        keeping for surrogate work: because ``E`` is pairing-dependent it
+        tracks across-trial rate covariance, which is what lets an
+        unrestricted derangement reject slow drift.
+    with_auto
+        Compute the auto terms, which only the legacy statistic needs and
+        which do touch spikes.  Defaults to *with_expected*; pass ``False``
+        alongside ``with_expected=True`` for count-space surrogate work.
     pairs
         ``(n_pairs, 2)`` explicit pair list; defaults to the upper triangle.
     buffers
@@ -2078,6 +2086,12 @@ def compute_ccg_counts(  # noqa: C901
     B = 2 * half + 1
     lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
 
+    need_auto = with_expected if with_auto is None else with_auto
+    if need_auto and not with_expected:
+        raise ValueError(
+            "with_auto=True needs with_expected=True: the legacy statistic "
+            "subtracts expected counts before dividing by the auto terms."
+        )
     pairing = np.asarray(pairing, dtype=np.int64)
     _validate_pairing_support(ts, pairing)
 
@@ -2089,7 +2103,7 @@ def compute_ccg_counts(  # noqa: C901
     # Use pre-allocated buffers or create new ones
     if buffers is not None:
         bufs = buffers
-        if with_expected and bufs.auto_per_trial.size == 0:
+        if need_auto and bufs.auto_per_trial.size == 0:
             raise ValueError(
                 "buffers were built with need_auto=False and cannot serve "
                 "expected and auto terms."
@@ -2102,7 +2116,7 @@ def compute_ccg_counts(  # noqa: C901
             max_lag,
             include_autocorr,
             pairs=pairs,
-            need_auto=with_expected,
+            need_auto=need_auto,
         )
 
     pair_arr = bufs.pair_arr
@@ -2132,7 +2146,7 @@ def compute_ccg_counts(  # noqa: C901
 
     # Corrcoef normalization
     use_corrcoef = with_expected
-    if use_corrcoef:
+    if need_auto:
         bufs.auto_per_trial[:] = 0
         _auto_terms_clipped(
             ts.all_spikes,
@@ -2232,8 +2246,8 @@ def compute_ccg_counts(  # noqa: C901
         ),
         n_spikes=ts.counts.sum(axis=1),
         durations=bufs.out_dur[:n_pairs].copy(),
-        auto_direct=auto_sum_direct if use_corrcoef else None,
-        auto_paired=auto_sum_paired if use_corrcoef else None,
+        auto_direct=auto_sum_direct if need_auto else None,
+        auto_paired=auto_sum_paired if need_auto else None,
     )
 
 
@@ -3228,6 +3242,385 @@ def NN_to_pair_vec(arr_NN: np.ndarray, pairs: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Surrogate trial pairings
 # ---------------------------------------------------------------------------
+
+
+class _Welford:
+    """Online mean and variance, elementwise over an array.
+
+    Keeps two arrays regardless of how many surrogates are drawn, where
+    retaining the draws would cost ``n_surrogates`` times as much.
+    """
+
+    __slots__ = ("count", "mean", "m2")
+
+    def __init__(self, shape: tuple[int, ...]) -> None:
+        """Start an accumulator over arrays of *shape*."""
+        self.count = 0
+        self.mean = np.zeros(shape, dtype=np.float64)
+        self.m2 = np.zeros(shape, dtype=np.float64)
+
+    def update(self, x: np.ndarray) -> None:
+        """Fold one observation into the running statistics."""
+        self.count += 1
+        delta = x - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (x - self.mean)
+
+    def sd(self) -> np.ndarray:
+        """Sample standard deviation; zero where fewer than two draws."""
+        if self.count < 2:
+            return np.zeros_like(self.mean)
+        return np.sqrt(self.m2 / (self.count - 1))
+
+
+class SurrogateTest:
+    """Observed CCG statistic against a trial-permutation null.
+
+    Built by :func:`surrogate_null`.  The comparison lives in count space:
+    nothing here is divided by an auto term or any other pairing-dependent
+    denominator, so the observed value and every surrogate are the same
+    kind of quantity.
+
+    Attributes
+    ----------
+    observed
+        The statistic under the identity pairing.
+    mean, sd
+        Null mean and standard deviation, accumulated online.
+    n_surrogates
+        Number of surrogate pairings drawn.
+    draws
+        Every surrogate value, kept only when a *reduce* collapsed each one
+        to a per-pair scalar -- cheap enough to retain, and what an
+        empirical p-value needs.
+    provenance
+        The shuffle scheme, for the result and for Methods.
+    """
+
+    __slots__ = (
+        "observed",
+        "mean",
+        "sd",
+        "n_surrogates",
+        "draws",
+        "provenance",
+    )
+
+    def __init__(
+        self,
+        observed: np.ndarray,
+        mean: np.ndarray,
+        sd: np.ndarray,
+        n_surrogates: int,
+        provenance: dict[str, Any],
+        draws: np.ndarray | None = None,
+    ) -> None:
+        """Store an observed statistic and the null it is judged against."""
+        self.observed = observed
+        self.mean = mean
+        self.sd = sd
+        self.n_surrogates = n_surrogates
+        self.provenance = provenance
+        self.draws = draws
+
+    def z(self) -> np.ndarray:
+        """Standardized deviation from the null, ``NaN`` where sd is zero."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(
+                self.sd > 0, (self.observed - self.mean) / self.sd, np.nan
+            )
+
+    def p_value(self, tail: str = "greater") -> np.ndarray:
+        """One-sided empirical p-value, ``(n_draws + 1)`` corrected.
+
+        Needs the retained draws, so :func:`surrogate_null` must have been
+        given a *reduce*.  The ``+1`` keeps the p-value from ever being
+        zero, which an empirical null cannot justify.
+        """
+        if self.draws is None:
+            raise ValueError(
+                "empirical p-values need the surrogate draws; call "
+                "surrogate_null with a `reduce` so each draw collapses to "
+                "a per-pair scalar worth retaining."
+            )
+        if tail == "greater":
+            at_least = (self.draws >= self.observed[np.newaxis, :]).sum(0)
+        elif tail == "less":
+            at_least = (self.draws <= self.observed[np.newaxis, :]).sum(0)
+        else:
+            raise ValueError(
+                f"tail must be 'greater' or 'less', got {tail!r}."
+            )
+        return (at_least + 1.0) / (self.n_surrogates + 1.0)
+
+
+def surrogate_null(
+    trial_segments: TrialSegments,
+    shuffle: TrialShuffle,
+    n_surrogates: int,
+    rng: np.random.Generator,
+    *,
+    subtract_expected: bool = True,
+    reduce: Callable[[np.ndarray, CCGCounts], np.ndarray] | None = None,
+    **kwargs: Any,
+) -> SurrogateTest:
+    """Compare an observed CCG against a trial-permutation null.
+
+    Count space throughout: each surrogate contributes raw coincidence
+    counts, optionally minus the expected-count term, and nothing is
+    normalized per surrogate.  Normalizing each one would divide by a
+    pairing-dependent denominator and make the draws incommensurable.
+
+    Keep *subtract_expected*.  ``E`` is pairing-dependent through
+    ``sum_k n_i(k) n_j(sigma(k))``, so it tracks across-trial rate
+    covariance on both sides of the comparison; with it, an unrestricted
+    derangement rejects slow drift without the sensitivity a constrained
+    shuffle gives up.
+
+    Parameters
+    ----------
+    trial_segments
+        Output of :func:`clip_spikes_to_trials`.
+    shuffle
+        The :class:`TrialShuffle` scheme; its provenance is carried onto
+        the result.
+    n_surrogates
+        Number of pairings to draw.
+    rng
+        NumPy random generator.
+    subtract_expected
+        Subtract ``E_b`` from every pairing, observed included.
+    reduce
+        Optional ``(values, counts) -> (n_pairs,)`` collapse applied to
+        each draw, e.g. a peak over a lag window.  Enables
+        :meth:`SurrogateTest.p_value` and shrinks the null to per-pair
+        scalars.
+    **kwargs
+        Passed to :func:`compute_ccg_counts` (``bin_size``, ``max_lag``,
+        ``pairs``, ``include_autocorr``).
+
+    Returns
+    -------
+    SurrogateTest
+    """
+    if n_surrogates < 1:
+        raise ValueError(f"need at least one surrogate, got {n_surrogates}.")
+    if not shuffle.is_random and n_surrogates > 1:
+        raise ValueError(
+            "this shuffle is deterministic (circular_offset with a fixed "
+            "offset), so every draw is the same pairing: the null would "
+            "have zero spread and every pair would look significant.  Use "
+            "offset=None to draw a shift per surrogate, or "
+            "shift_predictor_baseline for a single deterministic baseline."
+        )
+    kwargs.setdefault("with_expected", subtract_expected)
+    if subtract_expected and not kwargs["with_expected"]:
+        raise ValueError(
+            "subtract_expected=True is incompatible with "
+            "with_expected=False."
+        )
+    # The auto terms are the legacy statistic's, and count-space
+    # comparison never uses them; at many units and few pairs they are a
+    # third of the per-surrogate cost.
+    kwargs.setdefault("with_auto", False)
+
+    n_trials = len(trial_segments.durations)
+    if shuffle.n_trials != n_trials:
+        raise ValueError(
+            f"shuffle was built for {shuffle.n_trials} trials but these "
+            f"segments have {n_trials}."
+        )
+
+    def statistic(pairing: np.ndarray) -> tuple[np.ndarray, CCGCounts]:
+        """Count-space statistic for one pairing."""
+        counts = compute_ccg_counts(trial_segments, pairing, **kwargs)
+        values = counts.counts
+        if subtract_expected:
+            values = values - counts.expected_array()
+        if reduce is not None:
+            values = reduce(values, counts)
+        return values, counts
+
+    observed, _ = statistic(np.arange(n_trials))
+    acc = _Welford(observed.shape)
+    kept: list[np.ndarray] | None = [] if reduce is not None else None
+    for pairing in shuffle.draw(n_surrogates, rng):
+        values, _ = statistic(pairing)
+        acc.update(values)
+        if kept is not None:
+            kept.append(values)
+
+    provenance = shuffle.provenance()
+    provenance["n_surrogates"] = n_surrogates
+    provenance["subtract_expected"] = subtract_expected
+    return SurrogateTest(
+        observed=observed,
+        mean=acc.mean,
+        sd=acc.sd(),
+        n_surrogates=n_surrogates,
+        provenance=provenance,
+        draws=np.stack(kept) if kept else None,
+    )
+
+
+_SHUFFLE_MODES = frozenset({"global", "circular_offset", "within_block"})
+
+
+class TrialShuffle:
+    """A named scheme for drawing surrogate trial pairings.
+
+    The scheme is part of the scientific definition of the null, so it
+    travels with the pairings it produces rather than being implied by
+    whichever call site made them -- :meth:`provenance` is what belongs in
+    a result and in Methods.
+
+    Which scheme to use is a choice about *timescale*, not a correctness
+    knob.  ``global`` treats every across-trial correlation as nuisance; a
+    constrained scheme preserves correlations slower than its window, so it
+    also declines to detect real coupling on that timescale.  Note that the
+    across-trial *rate* covariance is better handled by keeping the
+    expected-count term (see :func:`compute_ccg_counts`), which costs no
+    sensitivity; the constrained schemes are for non-stationarity in the
+    fine-timescale structure, which no expected-count term can reach.
+
+    Attributes
+    ----------
+    n_trials
+        Number of trials the pairings index.
+    mode
+        ``"global"``, ``"circular_offset"`` or ``"within_block"``.
+    block_size
+        Block width for ``within_block``; the preserved timescale.
+    offset
+        Fixed shift for ``circular_offset``; ``None`` draws one per
+        surrogate.  ``offset=1`` is the classic shift predictor.
+    """
+
+    __slots__ = ("n_trials", "mode", "block_size", "offset")
+
+    def __init__(
+        self,
+        n_trials: int,
+        *,
+        mode: str = "global",
+        block_size: int | None = None,
+        offset: int | None = None,
+    ) -> None:
+        """Validate and store a surrogate shuffle scheme."""
+        if mode == "local":
+            raise NotImplementedError(
+                'shuffle mode "local" is deferred; use "within_block", '
+                "which preserves a timescale the same way while staying a "
+                "valid derangement by construction."
+            )
+        if mode not in _SHUFFLE_MODES:
+            raise ValueError(
+                f"unknown shuffle mode {mode!r}; expected one of "
+                f"{sorted(_SHUFFLE_MODES)}."
+            )
+        if n_trials < 2:
+            raise ValueError(
+                f"a derangement needs at least 2 trials, got {n_trials}."
+            )
+        if mode == "within_block":
+            if block_size is None:
+                raise ValueError(
+                    'mode="within_block" requires block_size, which is '
+                    "the timescale it preserves."
+                )
+            if block_size < 2:
+                raise ValueError(
+                    f"block_size must be >= 2 to admit a derangement, got "
+                    f"{block_size}."
+                )
+            if block_size > n_trials:
+                raise ValueError(
+                    f"block_size {block_size} exceeds {n_trials} trials."
+                )
+        if mode == "circular_offset" and offset is not None:
+            if offset % n_trials == 0:
+                raise ValueError(
+                    f"offset {offset} is the identity on {n_trials} "
+                    "trials, so it pairs every trial with itself."
+                )
+        self.n_trials = n_trials
+        self.mode = mode
+        self.block_size = block_size
+        self.offset = offset
+
+    @property
+    def is_random(self) -> bool:
+        """Whether repeated draws differ.
+
+        A ``circular_offset`` with a fixed *offset* yields one pairing
+        however many times it is asked, so it defines a single baseline --
+        the shift predictor -- not a null distribution.
+        """
+        return not (self.mode == "circular_offset" and self.offset is not None)
+
+    def provenance(self) -> dict[str, Any]:
+        """Scheme description to record on a result and report in Methods."""
+        out: dict[str, Any] = {
+            "surrogate_method": "trial_permutation",
+            "shuffle_scope": self.mode,
+            "n_trials": self.n_trials,
+        }
+        if self.mode == "within_block":
+            out["block_size"] = self.block_size
+        if self.mode == "circular_offset":
+            out["offset"] = (
+                self.offset if self.offset is not None else "random"
+            )
+        return out
+
+    def _blocks(self) -> list[np.ndarray]:
+        """Contiguous block index arrays, each of size >= 2.
+
+        A trailing block of one trial cannot be deranged, so it joins the
+        block before it rather than being dropped.
+        """
+        assert self.block_size is not None
+        edges = list(range(0, self.n_trials, self.block_size))
+        blocks = [
+            np.arange(a, min(a + self.block_size, self.n_trials))
+            for a in edges
+        ]
+        if len(blocks) > 1 and blocks[-1].size < 2:
+            blocks[-2] = np.concatenate([blocks[-2], blocks[-1]])
+            blocks.pop()
+        return blocks
+
+    def draw(
+        self, count: int, rng: np.random.Generator
+    ) -> Iterator[np.ndarray]:
+        """Yield *count* pairings under this scheme.
+
+        Every pairing is a permutation with no fixed point, so no trial is
+        ever paired with itself.
+        """
+        identity = np.arange(self.n_trials)
+        if self.mode == "circular_offset":
+            for _ in range(count):
+                shift = (
+                    self.offset
+                    if self.offset is not None
+                    else int(rng.integers(1, self.n_trials))
+                )
+                yield np.roll(identity, shift)
+            return
+        if self.mode == "within_block":
+            blocks = self._blocks()
+            for _ in range(count):
+                pairing = identity.copy()
+                for block in blocks:
+                    while True:
+                        shuffled = rng.permutation(block)
+                        if np.all(shuffled != block):
+                            break
+                    pairing[block] = shuffled
+                yield pairing
+            return
+        yield from derangements(self.n_trials, count, rng)
 
 
 def derangements(
