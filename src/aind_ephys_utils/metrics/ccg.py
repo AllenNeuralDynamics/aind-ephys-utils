@@ -1941,7 +1941,10 @@ def _window_weights(
 
 
 def directional_excess(
-    counts: CCGCounts, window: tuple[float, float] | None = None
+    counts: CCGCounts,
+    window: tuple[float, float] | None = None,
+    *,
+    reverse: bool = False,
 ) -> np.ndarray:
     """Integrated excess target spikes per source spike over *window*.
 
@@ -1953,6 +1956,18 @@ def directional_excess(
 
     *window* is a ``(low, high)`` lag interval, half-open on the right, and
     defaults to every lag.  Positive lags are the ``i -> j`` direction.
+
+    ``reverse=True`` gives the opposite orientation, ``j -> i``, from the
+    same rows -- no second kernel pass.  The numerator mirrors exactly,
+    since ``H_ji`` is ``H_ij`` reversed and ``E`` is even in lag, so only
+    the window flips and the divisor becomes the other unit's spike
+    count.  The two orientations are *not* mirror images of each other:
+    they share a numerator but divide by different source counts, which
+    is the point -- excess per *source* spike is what makes the statistic
+    comparable across pairs of differing rate.
+
+    Reversing needs the flip rule to hold, so it requires an involutive
+    pairing; the identity used for an observed CCG qualifies.
 
     Bins straddling a window edge are weighted by the fraction of their lag
     span that falls inside it, so *window* means the same interval at every
@@ -1973,8 +1988,17 @@ def directional_excess(
             "directional_excess needs `n_spikes`; this result was built "
             "without observation metadata."
         )
+    if reverse and not counts.mirror_is_defined():
+        raise ValueError(
+            "reverse=True reads the j -> i direction off the i -> j rows "
+            "via the flip rule, which holds only for an involutive "
+            "pairing.  This result was computed under one that is not."
+        )
+    if reverse and window is not None:
+        window = (-window[1], -window[0])
     weights = _window_weights(counts.lags, counts.bin_size, window)
-    n_i = counts.n_spikes[counts.pairs[:, 0]].astype(np.float64)
+    source = counts.pairs[:, 1] if reverse else counts.pairs[:, 0]
+    n_i = counts.n_spikes[source].astype(np.float64)
     totals = np.empty(counts.n_pairs, dtype=np.float64)
     for p in range(counts.n_pairs):
         row = counts.counts[p] - counts.expected_row(p)

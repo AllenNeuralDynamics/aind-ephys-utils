@@ -1875,5 +1875,87 @@ class LagSignTest(unittest.TestCase):
         self.assertGreater(peak, 0.0)
 
 
+@needs_numba
+class ReverseDirectionalExcessTest(unittest.TestCase):
+    """``reverse=True`` reads j -> i off the i -> j rows, no second pass."""
+
+    WINDOW = (0.001, 0.015)
+
+    @staticmethod
+    def _lopsided(seed=3, n_trials=40, dur=1.0):
+        """A sparse unit driving a dense one, so the divisors differ."""
+        rng = np.random.default_rng(seed)
+        starts = np.arange(n_trials) * 2.0
+        epochs = np.column_stack([starts, starts + dur])
+        a, b = [], []
+        for t0 in starts:
+            src = np.sort(rng.uniform(0, dur, rng.poisson(12)))
+            tgt = np.sort(rng.uniform(0, dur, rng.poisson(60)))
+            driven = src[rng.random(src.size) < 0.4] + 0.004
+            a.append(src + t0)
+            b.append(np.sort(np.concatenate([tgt, driven[driven < dur]])) + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(a), np.concatenate(b)], epochs, align_times=starts
+        )
+
+    def _counts(self, pairs):
+        ts = self._lopsided()
+        return compute_ccg_counts(
+            ts,
+            np.arange(40),
+            pairs=np.array(pairs),
+            bin_size=0.001,
+            max_lag=0.02,
+        )
+
+    def test_reverse_matches_a_second_computation(self):
+        # The whole point: one kernel pass yields both orientations.
+        forward = self._counts([[0, 1]])
+        swapped = self._counts([[1, 0]])
+        np.testing.assert_allclose(
+            directional_excess(forward, self.WINDOW, reverse=True),
+            directional_excess(swapped, self.WINDOW),
+            rtol=1e-12,
+        )
+
+    def test_the_two_orientations_differ_only_by_the_source_count(self):
+        # Read over corresponding windows the numerators are identical and
+        # only the divisor changes, so the ratio is exactly n_j / n_i.  A
+        # mirror-symmetric statistic would give 1 here instead.
+        counts = self._counts([[0, 1]])
+        mirrored = (-self.WINDOW[1], -self.WINDOW[0])
+        fwd = float(directional_excess(counts, self.WINDOW)[0])
+        rev = float(directional_excess(counts, mirrored, reverse=True)[0])
+        n_i, n_j = (float(counts.n_spikes[k]) for k in (0, 1))
+        self.assertAlmostEqual(fwd / rev, n_j / n_i, places=6)
+        self.assertGreater(n_j / n_i, 2.0)  # the fixture is lopsided
+
+    def test_reverse_reads_the_opposite_lag_side(self):
+        # With coupling at +4 ms only, the j -> i direction over the same
+        # nominal window sees background: it integrates negative lags.
+        counts = self._counts([[0, 1]])
+        fwd = float(directional_excess(counts, self.WINDOW)[0])
+        rev = float(directional_excess(counts, self.WINDOW, reverse=True)[0])
+        self.assertGreater(fwd, 20 * abs(rev))
+
+    def test_reverse_needs_an_involutive_pairing(self):
+        ts = self._lopsided()
+        rolled = np.roll(np.arange(40), 3)  # a 40-cycle, not an involution
+        counts = compute_ccg_counts(
+            ts,
+            rolled,
+            pairs=np.array([[0, 1]]),
+            bin_size=0.001,
+            max_lag=0.02,
+        )
+        self.assertFalse(counts.mirror_is_defined())
+        with self.assertRaisesRegex(ValueError, "involutive"):
+            directional_excess(counts, self.WINDOW, reverse=True)
+        # The forward direction is unaffected.
+        self.assertTrue(
+            np.isfinite(directional_excess(counts, self.WINDOW)).all()
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
