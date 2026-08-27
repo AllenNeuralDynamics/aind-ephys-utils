@@ -29,6 +29,7 @@ from aind_ephys_utils.metrics.ccg import (
     _window_weights,
     blank_zero_lag,
     ccg,
+    ccg_allpairs_sparse,
     ccg_between_sets_sparse,
     ccg_trial_paired,
     clip_spikes_to_trials,
@@ -1772,6 +1773,106 @@ class UndefinedAutoTermTest(unittest.TestCase):
             auto_paired=np.array([1.0, 1.0]),
         )
         self.assertTrue(np.isnan(legacy_auto_normalized(counts)).all())
+
+
+@needs_numba
+class LagSignTest(unittest.TestCase):
+    """``C[i, j]`` histograms ``t_j - t_i``, so a positive lag means *i* leads.
+
+    Guarded on its own rather than as a side effect of some other test,
+    because a reversal is invisible to every symmetric fixture --
+    identical trains, autocorrelograms, a max taken over all lags.  The
+    Julia reference this statistic was ported from ran for seven years
+    taking ``u - v`` while its docstring described ``v - u``, and the only
+    cross-language check used identical trains, which cannot tell the two
+    apart.
+    """
+
+    DUR, DELAY, BIN, MAXLAG = 60.0, 0.004, 0.001, 0.02
+
+    @classmethod
+    def _leader_follower(cls, seed=11):
+        """Unit 1 fires ``DELAY`` after unit 0, plus independent background."""
+        rng = np.random.default_rng(seed)
+        lead = np.sort(rng.uniform(0, cls.DUR, 400))
+        driven = lead + cls.DELAY
+        follow = np.sort(
+            np.concatenate(
+                [driven[driven < cls.DUR], rng.uniform(0, cls.DUR, 400)]
+            )
+        )
+        return lead, follow
+
+    def _peak_lag(self, lags, profile):
+        """Lag of the maximum of one correlogram."""
+        return float(lags[int(np.argmax(profile))])
+
+    def test_session_path_puts_the_follower_at_positive_lag(self):
+        lead, follow = self._leader_follower()
+        lags, C = ccg_allpairs_sparse(
+            [lead, follow],
+            bin_size=self.BIN,
+            max_lag=self.MAXLAG,
+            normalize="none",
+            observation_window=(0.0, self.DUR),
+        )
+        peak = self._peak_lag(lags, C[0, 1])
+        self.assertAlmostEqual(peak, self.DELAY, delta=self.BIN)
+        # Say the failure out loud: a reversal lands it at -DELAY.
+        self.assertGreater(peak, 0.0)
+
+    def test_the_transposed_cell_mirrors_it(self):
+        # If C[1, 0] did not peak at -DELAY the sign would be an accident
+        # rather than a convention.
+        lead, follow = self._leader_follower()
+        lags, C = ccg_allpairs_sparse(
+            [lead, follow],
+            bin_size=self.BIN,
+            max_lag=self.MAXLAG,
+            normalize="none",
+            observation_window=(0.0, self.DUR),
+        )
+        self.assertAlmostEqual(
+            self._peak_lag(lags, C[1, 0]), -self.DELAY, delta=self.BIN
+        )
+
+    def test_swapping_the_arguments_flips_the_sign(self):
+        lead, follow = self._leader_follower()
+        kw = dict(
+            bin_size=self.BIN,
+            max_lag=self.MAXLAG,
+            normalize="none",
+            observation_window=(0.0, self.DUR),
+        )
+        lags, forward = ccg_between_sets_sparse([lead], [follow], **kw)
+        _, reverse = ccg_between_sets_sparse([follow], [lead], **kw)
+        self.assertAlmostEqual(
+            self._peak_lag(lags, forward[0, 0]), self.DELAY, delta=self.BIN
+        )
+        self.assertAlmostEqual(
+            self._peak_lag(lags, reverse[0, 0]), -self.DELAY, delta=self.BIN
+        )
+
+    def test_the_trial_path_agrees_with_the_session_path(self):
+        # Two compute paths, one convention.
+        lead, follow = self._leader_follower()
+        n_trials = 20
+        edges = np.linspace(0.0, self.DUR, n_trials + 1)
+        epochs = np.column_stack([edges[:-1], edges[1:]])
+        ts = clip_spikes_to_trials(
+            [lead, follow], epochs, align_times=edges[:-1]
+        )
+        lags, C = ccg_trial_paired(
+            ts,
+            np.arange(n_trials),
+            bin_size=self.BIN,
+            max_lag=self.MAXLAG,
+            normalize="none",
+            pairs=np.array([[0, 1]]),
+        )
+        peak = self._peak_lag(lags, C[0])
+        self.assertAlmostEqual(peak, self.DELAY, delta=self.BIN)
+        self.assertGreater(peak, 0.0)
 
 
 if __name__ == "__main__":
