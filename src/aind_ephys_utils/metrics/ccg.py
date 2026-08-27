@@ -344,28 +344,30 @@ def _count_auto_first(u, halfbin):
 def _corrected_auto_counts(
     u: np.ndarray, bin_size: float, dur: float, edgecorrect: bool = True
 ) -> float:
-    """Auto-correlation normalization term for one spike train.
+    """Auto term for one spike train: the ACG's own two-sided centre bin.
 
-    Counts spike pairs within *bin_size* of each other (the "raw" auto
-    term), then subtracts the expected count under uniformity.  The
-    coefficient of 2 on the expected count (rather than 1) matches the
-    cross-correlation context: the denominator ``sqrt(A_u * A_v)``
-    must normalize the *two-sided* cross-histogram at lag 0, which
-    receives contributions from both positive and negative lags.
+    The ``corrcoef`` denominator normalizes the cross-histogram's centre
+    bin, which spans ``|lag| < bin_size / 2`` and so collects both lag
+    signs.  The auto term has to be that same quantity for the train
+    against itself, which is what
+    ``2 * count_auto_first(u, bin_size / 2) - n`` is:
+    :func:`_count_auto_first` already counts the ``n`` self-pairs, so
+    doubling it for the two signs and removing one copy leaves them
+    counted once.  Then subtract that bin's own expected count.
+
+    The earlier form took a one-sided count over the full ``bin_size``
+    and doubled the *expectation* instead, which is not the same
+    correction and left ``C[0]`` off unity by a rate-dependent factor.
     """
-    basecount = _count_auto_first(u, bin_size)
-    coeff = 2  # cross-correlation coefficient (not auto)
+    n = u.size
+    basecount = 2.0 * _count_auto_first(u, bin_size / 2) - n
     if edgecorrect:
-        return float(
-            basecount
-            - coeff
-            * _expected_count_edge_corrected(
-                bin_size, u.size, u.size, bin_size, dur
-            )
-        )
-    return float(
-        basecount - coeff * _expected_count(u.size, u.size, bin_size, dur)
-    )
+        # shape[centre] == Q_centre / dur**2, independent of the bin count.
+        ec = _expected_counts_shape(1, bin_size, dur)[0] * n * n
+    else:
+        # The centre bin is bin_size wide in total, so no doubling.
+        ec = _expected_count(n, n, bin_size, dur)
+    return float(basecount - ec)
 
 
 def _lag_geometry(
@@ -470,7 +472,30 @@ def _uniform_support(ts: "TrialSegments") -> bool:
     return bool(np.all(ts.pre == ts.pre[0]) and np.all(ts.post == ts.post[0]))
 
 
-_TRIAL_NORMALIZE_MODES = frozenset({"none", "corrcoef"})
+_TRIAL_NORMALIZE_MODES = frozenset(
+    {"none", "corrcoef", "legacy_auto_normalized"}
+)
+
+
+def _resolve_normalize(normalize: str) -> str:
+    """Map the deprecated ``"corrcoef"`` spelling onto its new name.
+
+    The statistic is not a correlation coefficient -- it is a shape
+    statistic with no ``[-1, 1]`` bound -- and the name was where that
+    misreading reached a reader.  The alias is retained for one release.
+    """
+    if normalize == "corrcoef":
+        warnings.warn(
+            'normalize="corrcoef" is deprecated; use '
+            '"legacy_auto_normalized".  The statistic is unchanged, but it '
+            "is a shape statistic rather than a correlation coefficient, "
+            "and is not bounded to [-1, 1].  Prefer normalized_covariance "
+            "for new work.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return "legacy_auto_normalized"
+    return normalize
 
 
 def _validate_trial_normalize(normalize: str) -> None:
@@ -558,6 +583,7 @@ def ccg_between_sets_sparse(  # noqa: C901
     M = len(spike_times_set1)
     N = len(spike_times_set2)
 
+    normalize = _resolve_normalize(normalize)
     _validate_binning(bin_size, max_lag)
     _validate_spike_trains(spike_times_set1 + spike_times_set2)
 
@@ -590,7 +616,7 @@ def ccg_between_sets_sparse(  # noqa: C901
 
     _compute_pairs(pair_list, S1, S2, half, bin_size, out_buf)
 
-    if normalize == "corrcoef":
+    if normalize == "legacy_auto_normalized":
         ec_shape = _expected_counts_shape(B, bin_size, T)
         auto_s1 = np.array(
             [_corrected_auto_counts(s, bin_size, T) for s in S1]
@@ -677,7 +703,7 @@ def _scatter_and_normalize(
     ``C[i, j]`` and ``C[j, i]`` take different divisors and must be applied
     after projection -- see :func:`_apply_normalization`.
     """
-    use_corrcoef = normalize == "corrcoef"
+    use_corrcoef = normalize == "legacy_auto_normalized"
     nspikes = np.array([x.size for x in S])
     counts = CCGCounts(
         counts=out_buf,
@@ -747,6 +773,7 @@ def ccg_allpairs_sparse(
         ``C[i,j](τ) = C[j,i](-τ)``
     """
     N = len(spike_times_by_unit)
+    normalize = _resolve_normalize(normalize)
     _validate_binning(bin_size, max_lag)
     _validate_spike_trains(spike_times_by_unit)
 
@@ -794,7 +821,7 @@ def ccg_allpairs_sparse(
         S,
     )
 
-    if normalize != "corrcoef":
+    if normalize != "legacy_auto_normalized":
         _apply_normalization(C, lags, normalize, T, S, bin_size)
 
     return lags, C
@@ -1147,11 +1174,16 @@ def _auto_terms_clipped(
         if n_clipped == 0:
             continue
         si_clip = si[lo:hi]
-        basecount = _count_auto_first(si_clip, bin_size)
-        ec = (
-            n_clipped * n_clipped * bin_size * (od - bin_size + bin_size / 2.0)
-        ) / (od * od)
-        out_auto[i, k] = basecount - 2.0 * ec
+        # The ACG's own two-sided centre bin, matching the cross-histogram
+        # bin the denominator normalizes.  Q_centre / od**2 is
+        # bin_size * (od - bin_size / 4) / od**2.
+        basecount = (
+            2.0 * _count_auto_first(si_clip, bin_size / 2.0) - n_clipped
+        )
+        ec = (n_clipped * n_clipped * bin_size * (od - bin_size / 4.0)) / (
+            od * od
+        )
+        out_auto[i, k] = basecount - ec
 
 
 class TrialSegments:
@@ -1874,11 +1906,18 @@ def legacy_auto_normalized(
         )
     a_i = counts.auto_direct[counts.pairs[:, 0]]
     a_j = counts.auto_paired[counts.pairs[:, 1]]
-    denom = np.sqrt(np.abs(a_i * a_j))
+    # A non-positive product means the statistic is undefined for that
+    # pair, not that its magnitude should stand in: the abs() here was a
+    # port-side deviation from the Julia reference, whose bare sqrt
+    # throws.  NaN rather than raising, so one degenerate pair does not
+    # take a whole batch down.
+    product = a_i * a_j
+    with np.errstate(invalid="ignore"):
+        denom = np.where(product > 0, np.sqrt(product), np.nan)
     res = _alloc(counts, out)
     for p in range(counts.n_pairs):
         row = counts.counts[p] - counts.expected_row(p)
-        res[p, :] = row / denom[p] if denom[p] > 0 else row
+        res[p, :] = row / denom[p] if denom[p] > 0 else np.nan
     return res
 
 
@@ -2356,6 +2395,7 @@ def ccg_trial_paired(  # noqa: C901
     count (rather than 1) matches the cross-correlation context: the
     denominator must normalize the two-sided cross-histogram at lag 0.
     """
+    normalize = _resolve_normalize(normalize)
     _validate_trial_normalize(normalize)
     result = compute_ccg_counts(
         trial_segments,
@@ -2363,12 +2403,12 @@ def ccg_trial_paired(  # noqa: C901
         bin_size=bin_size,
         max_lag=max_lag,
         include_autocorr=include_autocorr,
-        with_expected=(normalize == "corrcoef"),
+        with_expected=(normalize == "legacy_auto_normalized"),
         pairs=pairs,
         buffers=buffers,
     )
     lags = result.lags
-    use_corrcoef = normalize == "corrcoef"
+    use_corrcoef = normalize == "legacy_auto_normalized"
 
     C = legacy_auto_normalized(result) if use_corrcoef else result.counts
     # A pair with no observed overlap has no estimate; the expected-count
@@ -2446,6 +2486,7 @@ def ccg_trial_surrogates(  # noqa: C901
         mirrored; reverse ``C[p, :]`` to obtain the ``(j, i)`` CCG
         from a ``(i, j)`` row.
     """
+    normalize = _resolve_normalize(normalize)
     _validate_binning(bin_size, max_lag)
     _validate_trial_normalize(normalize)
     ts = trial_segments
@@ -2454,7 +2495,7 @@ def ccg_trial_surrogates(  # noqa: C901
     B = 2 * half + 1
     lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
     skip_clipping = _uniform_support(ts)
-    use_corrcoef = normalize == "corrcoef"
+    use_corrcoef = normalize == "legacy_auto_normalized"
 
     n_trials_seg = len(ts.durations)
     bufs_a = _CCGBuffers.for_segments(
@@ -2650,9 +2691,12 @@ def ccg_trial_surrogates(  # noqa: C901
                 else:
                     cross_per_trial = trial_counts[i, :] * paired_counts[j, :]
                     h -= ec_weighted.T @ cross_per_trial
-                denom = np.sqrt(abs(auto_sum_i[i] * auto_sum_j[j]))
-                if denom > 0:
-                    h /= denom
+                product = auto_sum_i[i] * auto_sum_j[j]
+                # See legacy_auto_normalized: undefined, not |value|.
+                if product > 0:
+                    h /= np.sqrt(product)
+                else:
+                    h = np.full_like(h, np.nan)
             if i == j and exclude_zero_lag_autocorr:
                 h[half] = 0.0
             C[p, :] = h

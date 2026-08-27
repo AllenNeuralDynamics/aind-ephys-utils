@@ -12,6 +12,7 @@ would *be* the decision.
 """
 
 import unittest
+import warnings
 
 import numpy as np
 import xarray as xr
@@ -375,14 +376,13 @@ class TrialPairedNormalizationTest(unittest.TestCase):
 
 @needs_numba
 class LegacyAutoTermTest(unittest.TestCase):
-    """``corrcoef`` should give C[0] == 1 for two units with equal trains.
+    """``corrcoef`` gives C[0] == 1 for two units with equal trains.
 
-    The denominator uses a one-sided width-``w`` auto count against a
-    doubled expectation, while the numerator is the two-sided centre bin, so
-    the two disagree by a rate-dependent factor.  The fix is specified in
-    ``ccg_implementation_plan.md`` (section 1c) and lands in Phase 5 with
-    the rename, so that reported numbers move and the cross-language
-    fixtures regenerate exactly once.
+    Self-consistency for the legacy statistic: the denominator's auto term
+    is now the ACG's own two-sided centre bin, the same quantity the
+    numerator's centre bin is.  Previously it took a one-sided width-``w``
+    count against a doubled expectation, so the two disagreed by a
+    rate-dependent factor and C[0] came out anywhere from 1.016 to 1.107.
     """
 
     @staticmethod
@@ -411,7 +411,6 @@ class LegacyAutoTermTest(unittest.TestCase):
             [per_trial, per_trial], 1.0, n_trials
         )
 
-    @unittest.expectedFailure
     def test_identical_trains_give_unit_zero_lag(self):
         """Self-consistency: a unit correlated with its own copy gives 1."""
         for kind in ("poisson", "regular", "bursty", "refractory"):
@@ -1680,6 +1679,99 @@ class SurrogateDenominatorTest(unittest.TestCase):
             ],
         )
         self.assertLess((d.max() - d.min()) / d.mean(), 1e-12)
+
+
+@needs_numba
+class CorrcoefDeprecationTest(unittest.TestCase):
+    """``"corrcoef"`` is an alias for ``"legacy_auto_normalized"``."""
+
+    @staticmethod
+    def _segments(n=20, dur=1.0, seed=0):
+        rng = np.random.default_rng(seed)
+        starts = np.arange(n) * 2.0
+        epochs = np.column_stack([starts, starts + dur])
+        trains = [
+            np.concatenate(
+                [
+                    np.sort(rng.uniform(0, dur, rng.poisson(40))) + t0
+                    for t0 in starts
+                ]
+            )
+            for _ in range(2)
+        ]
+        return clip_spikes_to_trials(trains, epochs, align_times=starts)
+
+    def test_the_old_spelling_warns(self):
+        ts = self._segments()
+        with self.assertWarns(DeprecationWarning):
+            ccg_trial_paired(
+                ts,
+                np.arange(20),
+                bin_size=0.002,
+                max_lag=0.02,
+                normalize="corrcoef",
+            )
+
+    def test_the_new_spelling_does_not_warn(self):
+        ts = self._segments()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ccg_trial_paired(
+                ts,
+                np.arange(20),
+                bin_size=0.002,
+                max_lag=0.02,
+                normalize="legacy_auto_normalized",
+            )
+        self.assertEqual(
+            [w for w in caught if issubclass(w.category, DeprecationWarning)],
+            [],
+        )
+
+    def test_both_spellings_give_the_same_numbers(self):
+        ts = self._segments()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            _, old = ccg_trial_paired(
+                ts,
+                np.arange(20),
+                bin_size=0.002,
+                max_lag=0.02,
+                normalize="corrcoef",
+            )
+        _, new = ccg_trial_paired(
+            ts,
+            np.arange(20),
+            bin_size=0.002,
+            max_lag=0.02,
+            normalize="legacy_auto_normalized",
+        )
+        np.testing.assert_array_equal(old, new)
+
+    def test_an_unknown_mode_is_still_rejected(self):
+        ts = self._segments()
+        with self.assertRaisesRegex(ValueError, "Unknown or unsupported"):
+            ccg_trial_paired(ts, np.arange(20), normalize="bogus")
+
+
+class UndefinedAutoTermTest(unittest.TestCase):
+    """A non-positive auto product makes the statistic undefined, not |x|."""
+
+    def test_non_positive_product_gives_nan(self):
+        # abs() was a port-side deviation; the Julia reference's bare sqrt
+        # throws.  NaN, so one degenerate pair does not fail a batch.
+        pairs = np.array([[0, 1]])
+        counts = CCGCounts(
+            counts=np.ones((1, 5)),
+            lags=np.arange(5, dtype=np.float64),
+            pairs=pairs,
+            n_units=2,
+            bin_size=1.0,
+            expected_factors=(np.zeros(5), np.zeros(1)),
+            auto_direct=np.array([-4.0, 1.0]),
+            auto_paired=np.array([1.0, 1.0]),
+        )
+        self.assertTrue(np.isnan(legacy_auto_normalized(counts)).all())
 
 
 if __name__ == "__main__":
