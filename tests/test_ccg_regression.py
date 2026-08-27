@@ -1100,11 +1100,12 @@ class BaselineLayerTest(unittest.TestCase):
 
     @staticmethod
     def _drifting(seed=0, n_trials=40, dur=1.0, base=40.0, swing=25.0):
-        """Two units independent within every trial, sharing a slow drift.
+        """Two units conditionally independent within every trial.
 
-        No pairwise coupling at any lag -- only a rate both units follow
-        from trial to trial, which is what a stationary baseline cannot
-        see and a per-trial one can.
+        Their rates rise and fall together across trials, so they are
+        genuinely correlated -- this is not a null pair.  What they lack is
+        any fine-timescale structure: given each trial's spike counts, the
+        spike *times* are independent.
         """
         rng = np.random.default_rng(seed)
         starts = np.arange(n_trials) * (dur + 0.5)
@@ -1127,10 +1128,11 @@ class BaselineLayerTest(unittest.TestCase):
         kw.setdefault("include_autocorr", False)
         return compute_ccg_counts(ts, np.arange(len(ts.durations)), **kw)
 
-    def test_stationary_leaves_shared_modulation_in_the_residual(self):
-        # The plan's claim: `stationary` is a reference, not a correction.
-        # These units have no pairwise relationship, so a baseline that
-        # accounts for their shared drift should leave ~0.
+    def test_stationary_reports_the_shared_modulation(self):
+        # `stationary` is a reference, not a correction. The shared drift
+        # is a real correlation, so reporting it is a correct answer to a
+        # broader question; conditioning on per-trial counts answers the
+        # narrower fine-timescale one and leaves ~0.
         cond, stat = [], []
         for seed in range(12):
             c = self._counts(self._drifting(seed))
@@ -1248,6 +1250,82 @@ class BlankZeroLagTest(unittest.TestCase):
         got = blank_zero_lag(vals, counts, out=vals)
         self.assertIs(got, vals)
         self.assertEqual(vals[0, 2], 0.0)
+
+
+@needs_numba
+class BaselineSeparationTest(unittest.TestCase):
+    """What each baseline does and does not remove."""
+
+    @staticmethod
+    def _shared_time_locked(seed=0, n_trials=60, dur=1.0):
+        """Both units bump at the same latency in every trial.
+
+        No across-trial rate drift at all, so per-trial counts carry no
+        information about the confound.
+        """
+        rng = np.random.default_rng(seed)
+        starts = np.arange(n_trials) * (dur + 0.5)
+        epochs = np.column_stack([starts, starts + dur])
+        a, b = [], []
+        for t0 in starts:
+            trains = []
+            for _ in range(2):
+                x = np.concatenate(
+                    [
+                        rng.uniform(0, dur, rng.poisson(25 * dur)),
+                        rng.normal(0.5, 0.05, rng.poisson(15)),
+                    ]
+                )
+                trains.append(np.sort(x[(x >= 0) & (x < dur)]))
+            a.append(trains[0] + t0)
+            b.append(trains[1] + t0)
+        return clip_spikes_to_trials(
+            [np.concatenate(a), np.concatenate(b)],
+            epochs,
+            align_times=starts,
+        )
+
+    def test_baselines_differ_by_a_constant_in_lag(self):
+        # Both are proportional to Q_b, so the choice cannot change any
+        # shape statistic -- only the level.
+        ts = BaselineLayerTest._drifting(0)
+        counts = compute_ccg_counts(
+            ts,
+            np.arange(len(ts.durations)),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        diff = (
+            excess_density(counts, stationary_baseline(counts))[0]
+            - excess_density(counts)[0]
+        )
+        self.assertLess(diff.max() - diff.min(), 1e-9 * abs(diff.mean()))
+
+    def test_conditioning_on_counts_misses_time_locked_comodulation(self):
+        # Per-trial counts say nothing about *when* in the trial spikes
+        # fall, so a shared stimulus response survives the default
+        # baseline and needs the shift predictor.
+        cond, shift = [], []
+        for seed in range(6):
+            ts = self._shared_time_locked(seed)
+            n = len(ts.durations)
+            counts = compute_ccg_counts(
+                ts,
+                np.arange(n),
+                bin_size=0.002,
+                max_lag=0.02,
+                include_autocorr=False,
+            )
+            predictor = shift_predictor_baseline(
+                ts, bin_size=0.002, max_lag=0.02, include_autocorr=False
+            )
+            lam_i, lam_j = counts.rates()
+            scale = float(lam_i[0] * lam_j[0])
+            cond.append(np.mean(excess_density(counts)[0]) / scale)
+            shift.append(np.mean(excess_density(counts, predictor)[0]) / scale)
+        self.assertGreater(np.mean(cond), 0.2)
+        self.assertLess(abs(np.mean(shift)), 0.05)
 
 
 if __name__ == "__main__":

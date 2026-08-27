@@ -1644,11 +1644,25 @@ def stationary_baseline(counts: CCGCounts) -> _Rank1Baseline:
     """Baseline ``lambda_i lambda_j Q_b`` from whole-window mean rates.
 
     A *reference*, not a correction.  It removes each unit's mean rate but
-    nothing about how the two co-vary from trial to trial, so on
-    task-aligned data it leaves shared task modulation in the residual --
-    which the conditional-uniform default (the ``compute_ccg_counts``
-    expected counts) removes by conditioning on per-trial spike counts.
-    Reach for it when you want to *see* that modulation, not to remove it.
+    nothing about how the two co-vary from trial to trial.  Two units whose
+    rates rise and fall together across trials really are correlated, and
+    this baseline reports that; the conditional-uniform default conditions
+    it away by using per-trial spike counts.  Neither is wrong -- they
+    answer different questions, and which one you want depends on whether
+    shared slow modulation is your signal or your nuisance.
+
+    Both are proportional to ``Q_b``, so they differ by a constant in lag.
+    Shape statistics -- peak above flank, FWHM, latency -- are therefore
+    *identical* under either, and only level statistics such as
+    :func:`directional_excess` move.  A shape-based detector is indifferent
+    to this choice.
+
+    Note what conditioning on counts does not do: it says nothing about
+    *when* within a trial the spikes fall, so two units driven by the same
+    stimulus at the same latency still co-fire at short lags under the
+    conditional-uniform baseline.  Removing that needs
+    :func:`shift_predictor_baseline`, which keeps each unit's trial-locked
+    structure and destroys only the trial-specific pairing.
     """
     lam_i, lam_j = counts.rates()
     return _Rank1Baseline(counts._exposure(), lam_i * lam_j)
@@ -1664,6 +1678,12 @@ def shift_predictor_baseline(
     ``sigma(k) = k + offset`` rather than a separate computation.  It keeps
     each unit's trial-locked structure and destroys within-trial coupling,
     which is what makes it a baseline.
+
+    This is the baseline that removes shared *time-locked* modulation --
+    two units responding to the same stimulus at the same latency -- which
+    the conditional-uniform default leaves in, since conditioning on
+    per-trial counts does not constrain when in the trial those spikes
+    fall.
 
     ``offset`` must be non-zero; keyword arguments go to
     :func:`compute_ccg_counts`.
