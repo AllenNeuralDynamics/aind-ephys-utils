@@ -1,14 +1,20 @@
-"""Regression tests for known CCG correctness defects.
+"""Regression tests for CCG correctness defects, all of them now fixed.
 
-Each test here pins behaviour that the implementation currently gets wrong
-or leaves unspecified.  Tests are grouped by the defect they guard; see
-``ccg_implementation_review.md`` for the analysis behind each one.
+Each test pins behaviour that was once wrong or unspecified, so a
+reintroduction fails here rather than in someone's analysis.  Each says in
+its docstring what the wrong answer looked like, which is the part worth
+keeping: a test whose failure mode is unnamed tends to get "fixed" by
+adjusting the assertion.
 
-Only defects with an unambiguous correct answer are covered.  Items needing
-a semantic decision first (variable-window ``corrcoef`` counts, the dense
-lower-triangle mirror under non-identity pairings, what ``"corrcoef"``
-promises, explicit ``(i, i)`` pairs) are deliberately absent: the assertion
-would *be* the decision.
+Several guard properties that no symmetric or single-pair fixture can see
+-- the dense lower-triangle mirror under a non-involutive pairing, the lag
+sign, and the direction-dependence of the integrated excess.  Those are the
+ones to be most careful about weakening.
+
+``ccg_implementation_plan.md`` records the decisions behind the cases that
+needed one: what ``"corrcoef"`` promises, the dense mirror under a general
+pairing, explicit ``(i, i)`` pairs, and the observation-window contract.
+Each had to be settled before its assertion could be written at all.
 """
 
 import unittest

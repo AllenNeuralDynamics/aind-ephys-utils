@@ -1,8 +1,11 @@
 # CCG normalization: implementation plan
 
 Consolidates `ccg_implementation_review.md`, `judgement-call-items.md`,
-`corrcoef-auto-term.md`, and the four design documents in `~/Downloads`.
-Supersedes the recommendations in those documents where they differ.
+`corrcoef-auto-term.md`, `ccg_support_and_constrained_shuffle_updates.md`
+and the four design documents in `~/Downloads`.  This supersedes all of
+them, and they have been removed now that every recommendation in them is
+either settled here or implemented and under test.  The review is
+recoverable from git at `9736037` if the longer analysis is wanted.
 
 Line references are `aind-ephys-utils/src/aind_ephys_utils/metrics/ccg.py`
 unless stated. `PL-inputs-analysis/src/pl_inputs_analysis/ccg.py` is a
