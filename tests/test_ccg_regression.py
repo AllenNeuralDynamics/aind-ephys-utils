@@ -1039,5 +1039,55 @@ class WindowWeightTest(unittest.TestCase):
             _window_weights(self._lags(), 0.002, (0.01, 0.001))
 
 
+class RectangularProjectionTest(unittest.TestCase):
+    """Two distinct unit sets project to a rectangle, and never mirror."""
+
+    @staticmethod
+    def _counts(n_rows=2, n_cols=3, nbins=4):
+        pairs = np.array(
+            [(i, j) for i in range(n_rows) for j in range(n_cols)]
+        )
+        vals = np.arange(pairs.shape[0] * nbins, dtype=np.float64).reshape(
+            pairs.shape[0], nbins
+        )
+        return vals, CCGCounts(
+            counts=vals,
+            lags=np.arange(nbins, dtype=np.float64),
+            pairs=pairs,
+            n_units=(n_rows, n_cols),
+            bin_size=1.0,
+        )
+
+    def test_shape_follows_the_two_sets(self):
+        vals, counts = self._counts()
+        self.assertFalse(counts.is_square)
+        self.assertEqual(counts.grid, (2, 3))
+        self.assertEqual(to_dense(vals, counts).shape, (2, 3, 4))
+
+    def test_nothing_is_mirrored(self):
+        # (j, i) is not a cell of this array, so there is nothing to
+        # mirror -- unlike the square non-involution case, which is a
+        # genuinely unknown value and gets NaN.
+        vals, counts = self._counts()
+        self.assertFalse(counts.mirror_is_defined())
+        dense = to_dense(vals, counts)
+        for p, (i, j) in enumerate(counts.pairs):
+            np.testing.assert_array_equal(dense[i, j], vals[p])
+
+    def test_square_still_mirrors(self):
+        vals, counts = self._counts()
+        counts.n_units = 3
+        self.assertTrue(counts.is_square)
+        self.assertEqual(counts.grid, (3, 3))
+
+    def test_dtype_is_honoured(self):
+        vals, counts = self._counts()
+        self.assertEqual(to_dense(vals, counts).dtype, np.float64)
+        out = to_dense(vals, counts, dtype=np.float32)
+        self.assertEqual(out.dtype, np.float32)
+        # float32 halves a projection that is ~1 GB at N=499, B=1001.
+        np.testing.assert_allclose(out, vals.reshape(2, 3, 4), rtol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Union
 
 import numpy as np
 import xarray as xr
@@ -1417,7 +1417,10 @@ class CCGCounts:
     pairs
         ``(n_pairs, 2)`` array of ``(i, j)`` unit indices.
     n_units
-        ``N``: the side of the square a dense projection would fill.
+        ``N``, the side of the square a dense projection fills -- or
+        ``(n_rows, n_cols)`` when the pair indices address two distinct
+        unit sets, as ``ccg_between_sets_sparse`` does.  A rectangular
+        result has no transposed cell to mirror into.
     bin_size
         Lag bin width, in the timebase of *lags*.
     pairing
@@ -1453,7 +1456,7 @@ class CCGCounts:
         counts: np.ndarray,
         lags: np.ndarray,
         pairs: np.ndarray,
-        n_units: int,
+        n_units: int | tuple[int, int],
         bin_size: float,
         pairing: np.ndarray | None = None,
         exposure: np.ndarray | None = None,
@@ -1558,6 +1561,18 @@ class CCGCounts:
         return self.exposure
 
     @property
+    def grid(self) -> tuple[int, int]:
+        """Dense projection shape ``(n_rows, n_cols)``."""
+        if isinstance(self.n_units, tuple):
+            return self.n_units
+        return (self.n_units, self.n_units)
+
+    @property
+    def is_square(self) -> bool:
+        """Whether rows and columns index the same unit set."""
+        return not isinstance(self.n_units, tuple)
+
+    @property
     def n_pairs(self) -> int:
         """Number of pairs carried by this result."""
         return int(self.pairs.shape[0])
@@ -1571,7 +1586,14 @@ class CCGCounts:
         which a session-wide result (no pairing at all) satisfies
         vacuously.
         """
+        if not self.is_square:
+            # Two distinct sets: (j, i) is not a cell of this array at all,
+            # so there is nothing to mirror rather than something unknown.
+            return False
         return self.pairing is None or _is_involution(self.pairing)
+
+
+BaselineLike = Union[np.ndarray, CCGCounts, "_Rank1Baseline", None]
 
 
 def _alloc(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
@@ -1581,11 +1603,106 @@ def _alloc(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
     return np.empty(counts.counts.shape, dtype=np.float64)
 
 
+class _Rank1Baseline:
+    """Baseline of the form ``shape[b] * scale[p]``, kept factored.
+
+    Both the stationary baseline and the conditional-uniform one are rank-1
+    in (lag, pair), so neither needs an ``(n_pairs, B)`` array.
+    """
+
+    __slots__ = ("shape", "scale")
+
+    def __init__(self, shape: np.ndarray, scale: np.ndarray) -> None:
+        """Store the lag profile and its per-pair scaling."""
+        self.shape = shape
+        self.scale = scale
+
+    def row(self, p: int) -> np.ndarray:
+        """Baseline lag profile for pair *p*."""
+        return np.asarray(self.shape * self.scale[p])
+
+
 def _baseline_row(
-    counts: CCGCounts, baseline: np.ndarray | None, p: int
+    counts: CCGCounts, baseline: BaselineLike, p: int
 ) -> np.ndarray:
-    """Baseline lag profile for pair *p*, defaulting to expected counts."""
-    return counts.expected_row(p) if baseline is None else baseline[p]
+    """Baseline lag profile for pair *p*, defaulting to expected counts.
+
+    Accepts the conditional-uniform default (``None``), a factored
+    baseline, another :class:`CCGCounts` -- which is what a shift predictor
+    is -- or a supplied ``(n_pairs, B)`` array.
+    """
+    if baseline is None:
+        return counts.expected_row(p)
+    if isinstance(baseline, CCGCounts):
+        return np.asarray(baseline.counts[p])
+    if isinstance(baseline, _Rank1Baseline):
+        return baseline.row(p)
+    return np.asarray(baseline[p])
+
+
+def stationary_baseline(counts: CCGCounts) -> _Rank1Baseline:
+    """Baseline ``lambda_i lambda_j Q_b`` from whole-window mean rates.
+
+    A *reference*, not a correction.  It removes each unit's mean rate but
+    nothing about how the two co-vary from trial to trial, so on
+    task-aligned data it leaves shared task modulation in the residual --
+    which the conditional-uniform default (the ``compute_ccg_counts``
+    expected counts) removes by conditioning on per-trial spike counts.
+    Reach for it when you want to *see* that modulation, not to remove it.
+    """
+    lam_i, lam_j = counts.rates()
+    return _Rank1Baseline(counts._exposure(), lam_i * lam_j)
+
+
+def shift_predictor_baseline(
+    trial_segments: TrialSegments, *, offset: int = 1, **kwargs: Any
+) -> CCGCounts:
+    """CCG counts under a circularly shifted trial pairing.
+
+    A shift predictor is just the CCG of unit *i* against unit *j* on a
+    neighbouring trial, so it is :func:`compute_ccg_counts` under
+    ``sigma(k) = k + offset`` rather than a separate computation.  It keeps
+    each unit's trial-locked structure and destroys within-trial coupling,
+    which is what makes it a baseline.
+
+    ``offset`` must be non-zero; keyword arguments go to
+    :func:`compute_ccg_counts`.
+    """
+    n_trials = len(trial_segments.durations)
+    if offset % n_trials == 0:
+        raise ValueError(
+            f"offset {offset} is the identity on {n_trials} trials, which "
+            "pairs every trial with itself rather than shifting."
+        )
+    kwargs.setdefault("with_expected", False)
+    return compute_ccg_counts(
+        trial_segments, np.roll(np.arange(n_trials), offset), **kwargs
+    )
+
+
+def surrogate_mean_baseline(
+    trial_segments: TrialSegments,
+    pairings: Iterable[np.ndarray],
+    **kwargs: Any,
+) -> np.ndarray:
+    """Mean raw counts over a set of surrogate trial pairings.
+
+    Averaging in count space, never over normalized surrogates: the
+    normalization denominators are themselves pairing-dependent, so a mean
+    of normalized surrogates is not the normalization of their mean.
+    """
+    kwargs.setdefault("with_expected", False)
+    total: np.ndarray | None = None
+    n = 0
+    for pairing in pairings:
+        counts = compute_ccg_counts(trial_segments, pairing, **kwargs)
+        total = (
+            counts.counts.copy() if total is None else total + counts.counts
+        )
+        n += 1
+    if total is None:
+        raise ValueError("`pairings` was empty; no baseline to average.")
+    return total / n
 
 
 def cross_intensity(
@@ -1606,7 +1723,7 @@ def cross_intensity(
 
 def excess_density(
     counts: CCGCounts,
-    baseline: np.ndarray | None = None,
+    baseline: BaselineLike = None,
     *,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
@@ -1660,7 +1777,7 @@ def normalized_covariance(
 
 def fold_over_baseline(
     counts: CCGCounts,
-    baseline: np.ndarray | None = None,
+    baseline: BaselineLike = None,
     *,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
@@ -1781,15 +1898,20 @@ def to_dense(
     counts: CCGCounts,
     *,
     fill: float = np.nan,
+    dtype: object = np.float64,
 ) -> np.ndarray:
-    """Project a pair-major array into the dense ``(N, N, B)`` layout.
+    """Project a pair-major array into its dense layout.
 
-    This is the single owner of the mirror policy.  ``pairs`` carries only
-    ``(i, j)`` with ``i <= j``; the transposed cell comes from the flip rule
-    ``C[j, i] = reverse(C[i, j])``, which holds only when the trial pairing
-    is an involution.  Under any other pairing ``C[j, i]`` is not
-    recoverable from ``C[i, j]``, so it is filled with ``NaN`` rather than a
-    plausible wrong number.
+    This is the single owner of the mirror policy.  For a square result
+    ``pairs`` carries only ``(i, j)`` with ``i <= j``; the transposed cell
+    comes from the flip rule ``C[j, i] = reverse(C[i, j])``, which holds
+    only when the trial pairing is an involution.  Under any other pairing
+    ``C[j, i]`` is not recoverable from ``C[i, j]``, so it is filled with
+    ``NaN`` rather than a plausible wrong number.
+
+    When rows and columns are two distinct unit sets, ``(j, i)`` is not a
+    cell of the array at all, so nothing is mirrored -- absent rather than
+    unknown, which is why it is not a ``NaN`` case.
 
     Parameters
     ----------
@@ -1800,21 +1922,27 @@ def to_dense(
         Supplies ``pairs``, ``n_units`` and ``pairing``.
     fill
         Value for cells that no pair covers.
+    dtype
+        Output dtype.  The session paths return ``float32`` for everything
+        but the legacy statistic, halving a projection that is ~1 GB at
+        ``N=499, B=1001``.
 
     Returns
     -------
     np.ndarray
-        ``(n_units, n_units, B)`` array.
+        ``(n_rows, n_cols, B)`` array -- square unless ``counts.n_units``
+        names two distinct unit sets.
     """
     vals = counts.counts if values is None else values
     pairs = counts.pairs
-    n_units = counts.n_units
-    out = np.full((n_units, n_units, vals.shape[1]), fill, dtype=np.float64)
+    n_rows, n_cols = counts.grid
+    out = np.full((n_rows, n_cols, vals.shape[1]), fill, dtype=dtype)
+    square = counts.is_square
     mirrorable = counts.mirror_is_defined()
     for p in range(pairs.shape[0]):
         i, j = int(pairs[p, 0]), int(pairs[p, 1])
         out[i, j, :] = vals[p]
-        if i != j:
+        if square and i != j:
             out[j, i, :] = vals[p][::-1] if mirrorable else np.nan
     return out
 
