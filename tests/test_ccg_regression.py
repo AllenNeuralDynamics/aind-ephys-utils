@@ -53,6 +53,7 @@ from aind_ephys_utils.metrics.ccg import (
     pair_correlation,
     pair_vec_to_NN,
     shift_predictor_baseline,
+    shuffled_excess_baseline,
     stationary_baseline,
     surrogate_mean_baseline,
     surrogate_null,
@@ -1342,12 +1343,11 @@ class BaselineSeparationTest(unittest.TestCase):
 
 
 @needs_numba
-class ScaledTransformBaselineTest(unittest.TestCase):
-    """`baseline=` on the transforms that also divide by something.
+class BaselineAndDivisorTest(unittest.TestCase):
+    """Baseline and divisor are independent axes.
 
-    The two axes are independent: a baseline says what chance is, a
-    divisor says what the units are.  Swapping one must not move the
-    other, which is the property these pin.
+    A baseline says what chance is, a divisor says what the units are.
+    Swapping one must not move the other, which is what these pin.
     """
 
     def setUp(self):
@@ -1440,6 +1440,131 @@ class ScaledTransformBaselineTest(unittest.TestCase):
             self.counts.expected_row(0) - shifted_counts.expected_row(0)
         ) / divisor
         np.testing.assert_allclose(contrast, as_baseline - e_term, rtol=1e-9)
+
+
+@needs_numba
+class ShuffledExcessBaselineTest(unittest.TestCase):
+    """Shuffle-correcting the excess rather than the raw counts."""
+
+    def setUp(self):
+        self.ts = BaselineLayerTest._drifting(5)
+        self.n = len(self.ts.durations)
+        self.kw = dict(bin_size=0.002, max_lag=0.02, include_autocorr=False)
+        self.ident = np.arange(self.n)
+        self.counts = compute_ccg_counts(self.ts, self.ident, **self.kw)
+        self.shifted = [
+            compute_ccg_counts(self.ts, np.roll(self.ident, o), **self.kw)
+            for o in (1, -1)
+        ]
+
+    def test_is_the_difference_of_two_corrected_traces(self):
+        # The one-call spelling has to equal the two-call one exactly, or
+        # it is not the same statistic.
+        for fn in (normalized_covariance, legacy_auto_normalized):
+            manual = fn(self.counts) - np.mean(
+                [fn(s) for s in self.shifted], axis=0
+            )
+            base = shuffled_excess_baseline(self.counts, self.shifted)
+            np.testing.assert_allclose(
+                fn(self.counts, base), manual, rtol=1e-12
+            )
+
+    def test_works_for_the_integrated_effect_size_too(self):
+        window = (0.002, 0.01)
+        base = shuffled_excess_baseline(self.counts, self.shifted[0])
+        manual = directional_excess(self.counts, window) - directional_excess(
+            self.shifted[0], window
+        )
+        np.testing.assert_allclose(
+            directional_excess(self.counts, window, baseline=base),
+            manual,
+            rtol=1e-12,
+        )
+
+    def test_differs_from_the_classical_form_by_the_rate_covariance(self):
+        # Subtracting H^sigma is the classical shuffle correction; this
+        # subtracts E + (H^sigma - E^sigma).  The gap is E - E^sigma.
+        shift = self.shifted[0]
+        base = shuffled_excess_baseline(self.counts, shift)
+        classical = legacy_auto_normalized(self.counts, shift)[0]
+        corrected = legacy_auto_normalized(self.counts, base)[0]
+        default = legacy_auto_normalized(self.counts)[0]
+        divisor = (
+            self.counts.counts[0] - self.counts.expected_row(0)
+        ) / default
+        e_term = (
+            self.counts.expected_row(0) - shift.expected_row(0)
+        ) / divisor
+        np.testing.assert_allclose(corrected, classical - e_term, rtol=1e-9)
+
+    def test_removes_drift_the_classical_form_reports(self):
+        """A derangement makes a good surrogate and a bad raw baseline.
+
+        Units whose rates rise and fall together, conditionally
+        independent within every trial.  ``H`` carries that covariance
+        and a deranged ``H^sigma`` does not, so subtracting ``H^sigma``
+        alone leaves it behind as a large spurious elevation -- the more
+        thoroughly the shuffle decorrelates trials, the worse it gets.
+        Keeping the expected-count term on both sides removes it.
+        """
+        classical, corrected = [], []
+        for seed in range(6):
+            ts = BaselineLayerTest._drifting(seed)
+            n = len(ts.durations)
+            rng = np.random.default_rng(seed)
+            obs = compute_ccg_counts(ts, np.arange(n), **self.kw)
+            pairing = next(iter(TrialShuffle(n).draw(1, rng)))
+            shuf = compute_ccg_counts(ts, pairing, **self.kw)
+            lam_i, lam_j = obs.rates()
+            scale = float(lam_i[0] * lam_j[0])
+            classical.append(np.mean(excess_density(obs, shuf)[0]) / scale)
+            corrected.append(
+                np.mean(
+                    excess_density(obs, shuffled_excess_baseline(obs, shuf))[0]
+                )
+                / scale
+            )
+        self.assertGreater(np.mean(classical), 0.1)
+        self.assertLess(abs(np.mean(corrected)), 0.02)
+
+    def test_rejects_results_that_cannot_be_differenced(self):
+        # A different pair list or binning means the rows are not on a
+        # common scale, so the difference would be meaningless.
+        other = compute_ccg_counts(
+            self.ts,
+            np.roll(self.ident, 1),
+            bin_size=0.004,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            shuffled_excess_baseline(self.counts, other)
+        self.assertIn("binning", str(ctx.exception))
+
+    def test_needs_at_least_one_shuffle(self):
+        with self.assertRaises(ValueError):
+            shuffled_excess_baseline(self.counts, [])
+
+    def test_reverse_needs_involutive_shuffles(self):
+        base = shuffled_excess_baseline(self.counts, self.shifted[0])
+        with self.assertRaises(ValueError) as ctx:
+            directional_excess(
+                self.counts, (0.002, 0.01), baseline=base, reverse=True
+            )
+        self.assertIn("involutive", str(ctx.exception))
+        half = compute_ccg_counts(
+            self.ts, np.roll(self.ident, self.n // 2), **self.kw
+        )
+        ok = shuffled_excess_baseline(self.counts, half)
+        self.assertTrue(
+            np.all(
+                np.isfinite(
+                    directional_excess(
+                        self.counts, (0.002, 0.01), baseline=ok, reverse=True
+                    )
+                )
+            )
+        )
 
 
 @needs_numba

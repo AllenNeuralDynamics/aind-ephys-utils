@@ -1675,7 +1675,13 @@ class CCGCounts:
         return self.pairing is None or _is_involution(self.pairing)
 
 
-BaselineLike = Union[np.ndarray, CCGCounts, "_Rank1Baseline", None]
+BaselineLike = Union[
+    np.ndarray,
+    CCGCounts,
+    "_Rank1Baseline",
+    "_ShuffledExcessBaseline",
+    None,
+]
 
 
 def _alloc(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
@@ -1704,6 +1710,40 @@ class _Rank1Baseline:
         return np.asarray(self.shape * self.scale[p])
 
 
+class _ShuffledExcessBaseline:
+    """``E + mean(H^sigma - E^sigma)``, held factored.
+
+    Subtracting it leaves ``(H - E) - mean(H^sigma - E^sigma)``: the
+    shuffle correction applied to the excess rather than to the raw
+    counts.  Rows are built one at a time, so the shuffles stay in their
+    own results instead of being summed into an ``(n_pairs, B)`` array.
+    """
+
+    __slots__ = ("counts", "shuffled")
+
+    def __init__(self, counts: CCGCounts, shuffled: list[CCGCounts]) -> None:
+        """Store the observed result and the shuffles to average."""
+        self.counts = counts
+        self.shuffled = shuffled
+
+    def row(self, p: int) -> np.ndarray:
+        """Baseline lag profile for pair *p*."""
+        acc = np.zeros(self.counts.lags.size, dtype=np.float64)
+        for other in self.shuffled:
+            acc += other.counts[p] - other.expected_row(p)
+        return np.asarray(
+            self.counts.expected_row(p) + acc / len(self.shuffled)
+        )
+
+    def mirror_is_defined(self) -> bool:
+        """Whether reversing a row lands on the transposed cell.
+
+        The expected-count terms are even in lag, so only the shuffles'
+        pairings decide this.
+        """
+        return all(other.mirror_is_defined() for other in self.shuffled)
+
+
 def _baseline_row(
     counts: CCGCounts, baseline: BaselineLike, p: int
 ) -> np.ndarray:
@@ -1717,9 +1757,24 @@ def _baseline_row(
         return counts.expected_row(p)
     if isinstance(baseline, CCGCounts):
         return np.asarray(baseline.counts[p])
-    if isinstance(baseline, _Rank1Baseline):
+    if isinstance(baseline, (_Rank1Baseline, _ShuffledExcessBaseline)):
         return baseline.row(p)
     return np.asarray(baseline[p])
+
+
+def _baseline_reverses(baseline: BaselineLike) -> bool:
+    """Whether reversing this baseline's rows lands on the transposed cell.
+
+    Needed by any statistic that reads the ``j -> i`` direction off the
+    ``i -> j`` rows.  Expected counts and a rank-1 baseline are even in
+    lag and always qualify; anything carrying a pairing has to have an
+    involutive one.  An explicit array is the caller's to get right.
+    """
+    if baseline is None or isinstance(baseline, _Rank1Baseline):
+        return True
+    if isinstance(baseline, (CCGCounts, _ShuffledExcessBaseline)):
+        return baseline.mirror_is_defined()
+    return True
 
 
 def stationary_baseline(counts: CCGCounts) -> _Rank1Baseline:
@@ -1805,6 +1860,71 @@ def surrogate_mean_baseline(
     if total is None:
         raise ValueError("`pairings` was empty; no baseline to average.")
     return total / n
+
+
+def _validate_comparable(counts: CCGCounts, other: CCGCounts) -> None:
+    """Reject two results whose transforms cannot be differenced.
+
+    Differencing two normalized traces assumes the divisor is the same on
+    both sides.  That holds when the pairs and binning match and both sit
+    on a common support -- the condition under which a divisor does not
+    move with the pairing at all.
+    """
+    if not np.array_equal(counts.pairs, other.pairs):
+        raise ValueError(
+            "the two results carry different pair lists, so their rows do "
+            "not describe the same pairs."
+        )
+    if counts.bin_size != other.bin_size or not np.allclose(
+        counts.lags, other.lags
+    ):
+        raise ValueError(
+            "the two results use different lag binning, so their rows are "
+            "not on a common lag axis."
+        )
+    if counts.exposure is None or other.exposure is None:
+        raise ValueError(
+            "differencing needs a common support on both sides, and at "
+            "least one of these results has trials that differ in "
+            "duration; call clip_to_window first."
+        )
+    if not np.allclose(counts.exposure, other.exposure):
+        raise ValueError(
+            "the two results were computed on different supports, so "
+            "their divisors differ and the difference is not on one scale."
+        )
+
+
+def shuffled_excess_baseline(
+    counts: CCGCounts,
+    shuffled: CCGCounts | Iterable[CCGCounts],
+) -> _ShuffledExcessBaseline:
+    """Shuffle-correct the excess instead of the raw counts.
+
+    Passing a :class:`CCGCounts` as a baseline subtracts ``H^sigma``, the
+    classical shuffle correction.  This subtracts
+    ``E + (H^sigma - E^sigma)``, so the conditional-uniform correction
+    stays on both sides and what is left is a difference of two excesses.
+
+    The two differ by ``E - E^sigma``, the across-trial rate covariance.
+    The classical form reports that as signal, because ``H`` carries it
+    and ``H^sigma`` does not; this form removes it along with the
+    time-locked structure a shuffle is chosen for.  Which is wanted
+    depends on whether shared slow modulation is signal or nuisance --
+    the same question :func:`stationary_baseline` poses, one level up.
+
+    *shuffled* is one result under a non-identity pairing, or several to
+    average over.  Each must share *counts*' pairs, binning and support.
+    """
+    others = [shuffled] if isinstance(shuffled, CCGCounts) else list(shuffled)
+    if not others:
+        raise ValueError(
+            "shuffled_excess_baseline needs at least one shuffled result "
+            "to correct against."
+        )
+    for other in others:
+        _validate_comparable(counts, other)
+    return _ShuffledExcessBaseline(counts, others)
 
 
 def cross_intensity(
@@ -2085,15 +2205,11 @@ def directional_excess(
             "via the flip rule, which holds only for an involutive "
             "pairing.  This result was computed under one that is not."
         )
-    if (
-        reverse
-        and isinstance(baseline, CCGCounts)
-        and not baseline.mirror_is_defined()
-    ):
+    if reverse and not _baseline_reverses(baseline):
         raise ValueError(
             "reverse=True flips the baseline along with the counts, so a "
-            "CCGCounts baseline needs an involutive pairing too.  A shift "
-            "predictor has one only at offset n_trials / 2."
+            "baseline carrying a pairing needs an involutive one too.  A "
+            "shift predictor has one only at offset n_trials / 2."
         )
     if reverse and window is not None:
         window = (-window[1], -window[0])
