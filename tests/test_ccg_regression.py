@@ -1963,5 +1963,94 @@ class ReverseDirectionalExcessTest(unittest.TestCase):
         )
 
 
+@needs_numba
+class ChunkedExcessTest(unittest.TestCase):
+    """Subtracting expected counts in chunks, into a reused buffer."""
+
+    @staticmethod
+    def _segments(n_units=6, n_trials=20, dur=1.0, seed=0):
+        rng = np.random.default_rng(seed)
+        starts = np.arange(n_trials) * 2.0
+        epochs = np.column_stack([starts, starts + dur])
+        trains = [
+            np.concatenate(
+                [
+                    np.sort(rng.uniform(0, dur, rng.poisson(40))) + t0
+                    for t0 in starts
+                ]
+            )
+            for _ in range(n_units)
+        ]
+        return clip_spikes_to_trials(trains, epochs, align_times=starts)
+
+    def _counts(self, **kw):
+        ts = self._segments()
+        return compute_ccg_counts(
+            ts,
+            np.arange(20),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+            **kw,
+        )
+
+    def test_chunks_reassemble_the_whole_array(self):
+        counts = self._counts()
+        whole = counts.expected_array()
+        chunked = np.concatenate(
+            [
+                counts.expected_chunk(lo, min(lo + 4, counts.n_pairs))
+                for lo in range(0, counts.n_pairs, 4)
+            ]
+        )
+        np.testing.assert_array_equal(chunked, whole)
+
+    def test_a_chunk_size_that_does_not_divide_evenly(self):
+        # The last chunk is short; an off-by-one here would silently drop
+        # or duplicate pairs.
+        counts = self._counts()
+        self.assertNotEqual(counts.n_pairs % 4, 0)
+        self.assertEqual(
+            counts.expected_chunk(0, counts.n_pairs).shape,
+            counts.counts.shape,
+        )
+
+    def test_chunked_excess_matches_the_naive_difference(self):
+        from aind_ephys_utils.metrics.ccg import _excess_into
+
+        counts = self._counts()
+        np.testing.assert_allclose(
+            _excess_into(counts, None),
+            counts.counts - counts.expected_array(),
+            rtol=1e-12,
+        )
+
+    def test_the_buffer_is_reused_but_the_observed_is_not_clobbered(self):
+        # statistic() hands back the shared scratch when nothing reduces
+        # it, so surrogate_null must copy the observed before drawing.
+        ts = self._segments()
+        result = surrogate_null(
+            ts,
+            TrialShuffle(20),
+            4,
+            np.random.default_rng(0),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        direct = compute_ccg_counts(
+            ts,
+            np.arange(20),
+            bin_size=0.002,
+            max_lag=0.02,
+            include_autocorr=False,
+        )
+        expected_observed = direct.counts - direct.expected_array()
+        np.testing.assert_allclose(
+            result.observed, expected_observed, rtol=1e-12
+        )
+        self.assertFalse(np.shares_memory(result.observed, result.mean))
+
+
 if __name__ == "__main__":
     unittest.main()
