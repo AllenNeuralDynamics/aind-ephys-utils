@@ -2087,6 +2087,20 @@ def legacy_auto_normalized(
     error, and its auto term carries a known zero-lag bias.  Prefer
     :func:`normalized_covariance` for new work.
 
+    ``A_i`` is an excess auto-coincidence count -- the ``n_i`` self-pairs
+    plus twice the above-chance pairs within ``bin_size / 2`` -- so it
+    tracks ``n_i`` times the binned-count Fano factor.  It reduces to the
+    spike count for a Poisson-like train and exceeds it for a bursty one,
+    which is where the scale's burst penalty comes from.
+
+    The two halves do not cancel across bin widths.  The numerator is a
+    count in a lag bin, so it grows with ``bin_size`` for structure the
+    bin resolves, while the divisor grows only as ``Fano`` does; the
+    statistic goes as ``bin_size / Fano(bin_size)``, linear for
+    Poisson-like units and sublinear for bursty ones.  Magnitudes are
+    therefore comparable only at a fixed bin width, and the dependence is
+    pair-specific rather than a constant that could be divided back out.
+
     *baseline* replaces ``E_b`` in the numerator; the divisor is the
     legacy one either way, so the result stays on the legacy scale.
     """
