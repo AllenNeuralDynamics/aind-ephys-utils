@@ -1342,6 +1342,107 @@ class BaselineSeparationTest(unittest.TestCase):
 
 
 @needs_numba
+class ScaledTransformBaselineTest(unittest.TestCase):
+    """`baseline=` on the transforms that also divide by something.
+
+    The two axes are independent: a baseline says what chance is, a
+    divisor says what the units are.  Swapping one must not move the
+    other, which is the property these pin.
+    """
+
+    def setUp(self):
+        ts = BaselineLayerTest._drifting(3)
+        self.ts = ts
+        self.n = len(ts.durations)
+        self.kw = dict(bin_size=0.002, max_lag=0.02, include_autocorr=False)
+        self.counts = compute_ccg_counts(ts, np.arange(self.n), **self.kw)
+        self.shift = shift_predictor_baseline(ts, **self.kw)
+
+    def test_default_is_still_the_independence_baseline(self):
+        # Passing nothing and passing None have to agree, or every
+        # existing caller silently changed meaning.
+        for fn in (normalized_covariance, legacy_auto_normalized):
+            np.testing.assert_array_equal(
+                fn(self.counts), fn(self.counts, None)
+            )
+        np.testing.assert_array_equal(
+            directional_excess(self.counts, (0.002, 0.01)),
+            directional_excess(self.counts, (0.002, 0.01), baseline=None),
+        )
+
+    def test_baseline_moves_the_numerator_and_nothing_else(self):
+        # Recover the divisor from the default call and check the new
+        # baseline lands on the same scale.
+        for fn in (normalized_covariance, legacy_auto_normalized):
+            default = fn(self.counts)[0]
+            numer = self.counts.counts[0] - self.counts.expected_row(0)
+            divisor = numer / default
+            shifted = fn(self.counts, self.shift)[0]
+            expect = (self.counts.counts[0] - self.shift.counts[0]) / divisor
+            np.testing.assert_allclose(shifted, expect, rtol=1e-9)
+
+    def test_directional_excess_integrates_over_the_given_baseline(self):
+        window = (0.002, 0.01)
+        got = directional_excess(self.counts, window, baseline=self.shift)
+        weights = _window_weights(
+            self.counts.lags, self.counts.bin_size, window
+        )
+        row = self.counts.counts[0] - self.shift.counts[0]
+        n_i = self.counts.n_spikes[self.counts.pairs[0, 0]]
+        np.testing.assert_allclose(
+            got[0], float(row @ weights) / n_i, rtol=1e-9
+        )
+
+    def test_reverse_rejects_a_non_involutive_baseline(self):
+        # reverse=True flips the baseline along with the counts, which
+        # lands on the transposed cell only for an involutive pairing.
+        # A roll by 1 is not one, so the flipped baseline belongs to
+        # sigma^-1 and the answer would be quietly wrong.
+        with self.assertRaises(ValueError) as ctx:
+            directional_excess(
+                self.counts, (0.002, 0.01), baseline=self.shift, reverse=True
+            )
+        self.assertIn("involutive", str(ctx.exception))
+
+    def test_reverse_accepts_an_involutive_baseline(self):
+        # A roll by half the trial count is its own inverse.
+        half = shift_predictor_baseline(self.ts, offset=self.n // 2, **self.kw)
+        got = directional_excess(
+            self.counts, (0.002, 0.01), baseline=half, reverse=True
+        )
+        self.assertTrue(np.all(np.isfinite(got)))
+
+    def test_a_pairing_contrast_is_not_a_shift_baseline(self):
+        """Subtracting two normalized traces is a third thing.
+
+        ``C(identity) - C(shift)`` leaves ``(H - H^s) - (E - E^s)``,
+        which is not ``(H - H^s)``: E is pairing-dependent, so the two
+        expected-count terms do not cancel.  Both are defensible, but
+        they are different statistics and neither spelling should be
+        "simplified" into the other.
+        """
+        shifted_counts = compute_ccg_counts(
+            self.ts, np.roll(np.arange(self.n), 1), **self.kw
+        )
+        contrast = (
+            legacy_auto_normalized(self.counts)[0]
+            - legacy_auto_normalized(shifted_counts)[0]
+        )
+        as_baseline = legacy_auto_normalized(self.counts, self.shift)[0]
+        self.assertFalse(np.allclose(contrast, as_baseline, rtol=1e-6))
+
+        # The difference is exactly the pairing-dependent part of E.
+        default = legacy_auto_normalized(self.counts)[0]
+        divisor = (
+            self.counts.counts[0] - self.counts.expected_row(0)
+        ) / default
+        e_term = (
+            self.counts.expected_row(0) - shifted_counts.expected_row(0)
+        ) / divisor
+        np.testing.assert_allclose(contrast, as_baseline - e_term, rtol=1e-9)
+
+
+@needs_numba
 class SurrogateNullTest(unittest.TestCase):
     """Subtracting E lets an unrestricted derangement reject slow drift.
 

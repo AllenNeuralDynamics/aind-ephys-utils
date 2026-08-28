@@ -1857,7 +1857,10 @@ def covariance_density(
 
 
 def normalized_covariance(
-    counts: CCGCounts, *, out: np.ndarray | None = None
+    counts: CCGCounts,
+    baseline: BaselineLike = None,
+    *,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Rate-normalized covariance ``c_ij / sqrt(lambda_i lambda_j)``, in Hz.
 
@@ -1865,6 +1868,11 @@ def normalized_covariance(
     units, free of the leading firing-rate dependence of sampling noise,
     independent of recording duration, and a density -- so it does not move
     with the display bin width.  It is *not* bounded to ``[-1, 1]``.
+
+    *baseline* defaults to the expected counts on the result, which is what
+    makes the numerator a covariance.  Against any other baseline this is a
+    normalized excess on the same scale -- the divisor is unchanged, since
+    what a baseline defines is chance, not units.
     """
     lam_i, lam_j = counts.rates()
     denom = np.sqrt(lam_i * lam_j)
@@ -1872,7 +1880,9 @@ def normalized_covariance(
     res = _alloc(counts, out)
     with np.errstate(divide="ignore", invalid="ignore"):
         for p in range(counts.n_pairs):
-            row = (counts.counts[p] - counts.expected_row(p)) / exposure
+            row = (
+                counts.counts[p] - _baseline_row(counts, baseline, p)
+            ) / exposure
             res[p, :] = row / denom[p] if denom[p] > 0 else np.nan
     return res
 
@@ -1908,7 +1918,10 @@ def pair_correlation(
 
 
 def legacy_auto_normalized(
-    counts: CCGCounts, *, out: np.ndarray | None = None
+    counts: CCGCounts,
+    baseline: BaselineLike = None,
+    *,
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Historical ``corrcoef`` statistic ``(H_b - E_b) / sqrt(A_i A_j)``.
 
@@ -1917,6 +1930,9 @@ def legacy_auto_normalized(
     coefficient: reading it as one bounded to ``[-1, 1]`` is a category
     error, and its auto term carries a known zero-lag bias.  Prefer
     :func:`normalized_covariance` for new work.
+
+    *baseline* replaces ``E_b`` in the numerator; the divisor is the
+    legacy one either way, so the result stays on the legacy scale.
     """
     if counts.auto_direct is None or counts.auto_paired is None:
         raise ValueError(
@@ -1935,7 +1951,7 @@ def legacy_auto_normalized(
         denom = np.where(product > 0, np.sqrt(product), np.nan)
     res = _alloc(counts, out)
     for p in range(counts.n_pairs):
-        row = counts.counts[p] - counts.expected_row(p)
+        row = counts.counts[p] - _baseline_row(counts, baseline, p)
         res[p, :] = row / denom[p] if denom[p] > 0 else np.nan
     return res
 
@@ -2008,6 +2024,7 @@ def directional_excess(
     counts: CCGCounts,
     window: tuple[float, float] | None = None,
     *,
+    baseline: BaselineLike = None,
     reverse: bool = False,
 ) -> np.ndarray:
     """Integrated excess target spikes per source spike over *window*.
@@ -2021,14 +2038,24 @@ def directional_excess(
     *window* is a ``(low, high)`` lag interval, half-open on the right, and
     defaults to every lag.  Positive lags are the ``i -> j`` direction.
 
+    *baseline* defaults to the expected counts on the result.  Passing the
+    shift predictor gives the excess over *that* baseline, which is not
+    the same as the difference of two shift-corrected traces: the divisor
+    is pairing-independent, so that contrast is the difference of two
+    calls, and the two spellings answer different questions.
+
     ``reverse=True`` gives the opposite orientation, ``j -> i``, from the
     same rows -- no second kernel pass.  The numerator mirrors exactly,
-    since ``H_ji`` is ``H_ij`` reversed and ``E`` is even in lag, so only
-    the window flips and the divisor becomes the other unit's spike
-    count.  The two orientations are *not* mirror images of each other:
-    they share a numerator but divide by different source counts, which
-    is the point -- excess per *source* spike is what makes the statistic
-    comparable across pairs of differing rate.
+    since ``H_ji`` is ``H_ij`` reversed and the baseline reverses into the
+    transposed cell, so only the window flips and the divisor becomes the
+    other unit's spike count.  The default baseline satisfies that because
+    it is even in lag; a ``CCGCounts`` baseline needs an involutive
+    pairing, and an explicit array is the caller's to get right.
+
+    The two orientations are *not* mirror images of each other: they share
+    a numerator but divide by different source counts, which is the point
+    -- excess per *source* spike is what makes the statistic comparable
+    across pairs of differing rate.
 
     Reversing needs the flip rule to hold, so it requires an involutive
     pairing; the identity used for an observed CCG qualifies.
@@ -2058,6 +2085,16 @@ def directional_excess(
             "via the flip rule, which holds only for an involutive "
             "pairing.  This result was computed under one that is not."
         )
+    if (
+        reverse
+        and isinstance(baseline, CCGCounts)
+        and not baseline.mirror_is_defined()
+    ):
+        raise ValueError(
+            "reverse=True flips the baseline along with the counts, so a "
+            "CCGCounts baseline needs an involutive pairing too.  A shift "
+            "predictor has one only at offset n_trials / 2."
+        )
     if reverse and window is not None:
         window = (-window[1], -window[0])
     weights = _window_weights(counts.lags, counts.bin_size, window)
@@ -2065,7 +2102,7 @@ def directional_excess(
     n_i = counts.n_spikes[source].astype(np.float64)
     totals = np.empty(counts.n_pairs, dtype=np.float64)
     for p in range(counts.n_pairs):
-        row = counts.counts[p] - counts.expected_row(p)
+        row = counts.counts[p] - _baseline_row(counts, baseline, p)
         totals[p] = row.sum() if weights is None else float(row @ weights)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.asarray(totals / n_i)
