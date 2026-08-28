@@ -28,13 +28,22 @@ from .ccg import (
     TrialSegments,
     TrialShuffle,
     _resolve_normalize,
+    compute_ccg_counts,
     legacy_auto_denominator,
     monte_carlo_pvalue,
+    normalize_is_pairing_invariant,
     pair_vec_to_NN,
     surrogate_null,
 )
 
 logger = logging.getLogger(__name__)
+
+# What run_surrogates will scale a count-space null by.  A subset of the
+# trial path's modes: every one of these has a pairing-invariant divisor.
+_SURROGATE_NORMALIZE_MODES = frozenset(
+    {"none", "legacy_auto_normalized", "normalized_covariance",
+     "covariance_density"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -177,21 +186,55 @@ def run_surrogates(
         ``(n_surr, n_pairs)`` float32 surrogate peak values.
     """
     normalize = _resolve_normalize(normalize)
+    # The divisor is built once, outside the loop, which is sound exactly
+    # because every mode admitted here has a pairing-invariant one: the
+    # draws then share the observed CCG's scale instead of each landing on
+    # its own.  See normalize_is_pairing_invariant.
+    #
+    # Split in two because a lag-dependent factor cannot wait until after
+    # the reduction -- ``max(x) / d == max(x / d)`` only for a lag-constant
+    # ``d``.  ``lag_denom`` divides before the max, ``pair_denom`` after,
+    # which keeps the per-pair scalar off the (n_pairs, B) array.
+    lag_denom: np.ndarray | None = None
+    pair_denom: np.ndarray | None = None
+    subtract_expected = True
     if normalize == "legacy_auto_normalized":
-        # Out of the loop, not inside it.  The divisor does not move with
-        # the pairing, so the draws stay on one scale and the observed
-        # peak the caller passes to run_two_stage_mc stays comparable to
-        # them; see legacy_auto_denominator.
-        denom = legacy_auto_denominator(trial_segs, pairs, bin_size)
-        subtract_expected = True
+        pair_denom = legacy_auto_denominator(trial_segs, pairs, bin_size)
+    elif normalize in ("normalized_covariance", "covariance_density"):
+        # One extra CCG pass against n_surr of them, to read the lag
+        # exposure and the whole-window rates.  Both are properties of the
+        # spike trains and the trial geometry, so any pairing gives the
+        # same answer; the identity is simply the cheapest to state.
+        reference = compute_ccg_counts(
+            trial_segs,
+            np.arange(n_trials),
+            bin_size=bin_size,
+            max_lag=max_lag,
+            pairs=pairs,
+            # Not a spare switch: CCGCounts only carries its lag exposure
+            # when the expected counts were computed, and Q_b is the whole
+            # point of this pass.
+            with_expected=True,
+        )
+        lag_denom = reference._exposure()
+        if normalize == "normalized_covariance":
+            lam_i, lam_j = reference.rates()
+            pair_denom = np.sqrt(lam_i * lam_j)
     elif normalize == "none":
-        denom = None
         subtract_expected = False
     else:
         raise ValueError(
-            f"run_surrogates supports 'legacy_auto_normalized' and 'none', "
-            f"got {normalize!r}."
+            f"run_surrogates supports {sorted(_SURROGATE_NORMALIZE_MODES)}, "
+            f"got {normalize!r}.  A mode is admissible only if its divisor "
+            "survives a trial re-pairing unchanged, so that a null drawn in "
+            "count space can be scaled once: lag exposure, whole-window "
+            "rates and the auto terms all qualify.  pair_correlation and "
+            "fold_over_baseline divide by the expected counts, which are "
+            "pairing-dependent, so each draw would land on its own scale; "
+            "the session-wide modes (rate, conditional, unbiased) are not "
+            "defined against per-trial support at all."
         )
+    assert normalize_is_pairing_invariant(normalize)
 
     def peak(values: np.ndarray, _counts: object) -> np.ndarray:
         """Per-pair peak, on the requested scale, in float32.
@@ -200,9 +243,11 @@ def run_surrogates(
         the retained null at half the width it would otherwise be, which
         is the array that grows with both the pair count and n_surr.
         """
+        if lag_denom is not None:
+            values = values / lag_denom
         out = np.max(values, axis=-1)
-        if denom is not None:
-            out = out / denom
+        if pair_denom is not None:
+            out = out / pair_denom
         return out.astype(np.float32)
 
     t0 = time.perf_counter()

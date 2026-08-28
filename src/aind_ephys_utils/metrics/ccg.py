@@ -471,9 +471,45 @@ def _uniform_support(ts: "TrialSegments") -> bool:
     return bool(np.all(ts.pre == ts.pre[0]) and np.all(ts.post == ts.post[0]))
 
 
+# Which scaled transforms the trial-paired path exposes through its
+# ``normalize=`` string.  Membership is not a taste call: every mode here
+# has a divisor built only from quantities a trial re-pairing leaves alone
+# -- lag exposure and whole-window rates -- so one scale describes the
+# observed CCG and every surrogate draw alike.  ``pair_correlation`` and
+# ``fold_over_baseline`` divide by ``E``, which *is* pairing-dependent, and
+# are deliberately absent: see :func:`normalize_is_pairing_invariant`.
 _TRIAL_NORMALIZE_MODES = frozenset(
-    {"none", "corrcoef", "legacy_auto_normalized"}
+    {
+        "none",
+        "corrcoef",
+        "legacy_auto_normalized",
+        "normalized_covariance",
+        "covariance_density",
+    }
 )
+
+# Modes whose divisor varies with lag, so it has to be applied before any
+# reduction over lag rather than after.  ``max(x)/d == max(x/d)`` only for a
+# lag-constant ``d``.
+_LAG_DEPENDENT_NORMALIZE = frozenset(
+    {"normalized_covariance", "covariance_density"}
+)
+
+
+def normalize_is_pairing_invariant(normalize: str) -> bool:
+    """Whether *normalize*'s divisor survives a trial re-pairing unchanged.
+
+    The criterion that decides whether a mode can be used for surrogate
+    inference.  Surrogates are drawn in count space and scaled once, which
+    is only valid when every draw shares the observed CCG's divisor.  A
+    divisor built from lag exposure, whole-window rates or the auto terms
+    qualifies -- a re-pairing moves no spikes, so none of them move.  One
+    built from the expected counts does not: ``E`` goes as
+    ``sum_k n_i(k) n_j(sigma(k))``, so each draw would land on its own
+    scale and the draws would not be comparable with each other or with
+    the observation.
+    """
+    return _resolve_normalize(normalize) in _TRIAL_NORMALIZE_MODES
 
 
 def _resolve_normalize(normalize: str) -> str:
@@ -2576,8 +2612,13 @@ def ccg_trial_paired(  # noqa: C901
     max_lag
         Maximum lag (seconds).
     normalize
-        ``"none"``, ``"counts"``, ``"rate"``, ``"conditional"``, ``"unbiased"``, or
-        ``"corrcoef"``.
+        ``"none"`` for raw counts, or one of the scaled transforms:
+        ``"legacy_auto_normalized"`` (``"corrcoef"`` is its deprecated
+        spelling), ``"normalized_covariance"`` or ``"covariance_density"``.
+        The last two are densities and need a common trial support, since
+        ``Q_b`` is otherwise undefined -- clip first.  The session-wide
+        modes (``"rate"``, ``"conditional"``, ``"unbiased"``) are defined
+        against one global duration and are rejected here.
     exclude_zero_lag_autocorr
         Zero the central bin for autocorrelograms.
     include_autocorr
@@ -2657,14 +2698,21 @@ def ccg_trial_paired(  # noqa: C901
         bin_size=bin_size,
         max_lag=max_lag,
         include_autocorr=include_autocorr,
-        with_expected=(normalize == "legacy_auto_normalized"),
+        with_expected=(normalize != "none"),
         pairs=pairs,
         buffers=buffers,
     )
     lags = result.lags
-    use_corrcoef = normalize == "legacy_auto_normalized"
 
-    C = legacy_auto_normalized(result) if use_corrcoef else result.counts
+    # Defined here rather than beside _TRIAL_NORMALIZE_MODES because the
+    # transforms are declared further down the module.
+    transform = {
+        "legacy_auto_normalized": legacy_auto_normalized,
+        "normalized_covariance": normalized_covariance,
+        "covariance_density": covariance_density,
+    }.get(normalize)
+
+    C = result.counts if transform is None else transform(result)
     # A pair with no observed overlap has no estimate; the expected-count
     # subtraction would otherwise leave -E there.
     C[result.durations <= 0, :] = 0.0

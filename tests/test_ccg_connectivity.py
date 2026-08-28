@@ -9,10 +9,13 @@ from aind_ephys_utils.metrics.ccg import (
     TrialShuffle,
     ccg_trial_paired,
     clip_spikes_to_trials,
+    clip_to_window,
     compute_ccg_counts,
     derangements,
     legacy_auto_denominator,
     legacy_auto_normalized,
+    normalize_is_pairing_invariant,
+    normalized_covariance,
     pair_vec_to_NN,
     surrogate_null,
 )
@@ -256,7 +259,98 @@ class LegacyDenominatorTest(unittest.TestCase):
             legacy_auto_denominator(ragged, self.pairs, 0.001)
 
 
+_SURR_KW = {"bin_size": 0.001, "max_lag": 0.02}
+
+
 @unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
+class SurrogateNormalizeModeTest(unittest.TestCase):
+    """Density scales through the count-space surrogate driver."""
+
+    @staticmethod
+    def _clipped(seed=3):
+        """Segments on a common support, which the density scales require."""
+        segs, _ = _make_trial_segments(np.random.default_rng(seed))
+        return clip_to_window(
+            segs, (-float(segs.pre.min()), float(segs.post.min()))
+        )
+
+    def _null(self, segs, normalize, seed=0):
+        return run_surrogates(
+            segs,
+            n_trials=8,
+            n_units=4,
+            n_surr=40,
+            pairs=np.array([[0, 1]]),
+            rng=np.random.default_rng(seed),
+            normalize=normalize,
+            **_SURR_KW,
+        )
+
+    def test_density_modes_are_accepted_and_finite(self):
+        segs = self._clipped()
+        for mode in ("normalized_covariance", "covariance_density"):
+            with self.subTest(mode=mode):
+                draws = self._null(segs, mode)
+                self.assertEqual(draws.shape, (40, 1))
+                self.assertTrue(np.all(np.isfinite(draws)))
+
+    def test_z_is_unchanged_by_the_choice_of_scale(self):
+        # The migration guarantee.  Both divisors are pairing-invariant, so
+        # they cancel in (peak - mean) / sd; the same seed gives both nulls
+        # the same pairings, leaving the divisor as the only difference.
+        # They are not identical because normalized_covariance's divisor
+        # carries the lag exposure, which varies ~2% across this window.
+        segs = self._clipped()
+        counts = compute_ccg_counts(
+            segs, np.arange(8), pairs=np.array([[0, 1]]),
+            with_expected=True, **_SURR_KW
+        )
+        zs = {}
+        for mode, fn in (
+            ("legacy_auto_normalized", legacy_auto_normalized),
+            ("normalized_covariance", normalized_covariance),
+        ):
+            null = self._null(segs, mode)[:, 0]
+            peak = float(np.max(fn(counts)[0]))
+            zs[mode] = (peak - null.mean()) / null.std(ddof=1)
+        self.assertAlmostEqual(
+            zs["legacy_auto_normalized"], zs["normalized_covariance"], delta=0.1
+        )
+
+    def test_pairing_dependent_divisors_are_refused(self):
+        segs = self._clipped()
+        for mode in ("pair_correlation", "fold_over_baseline", "rate"):
+            with self.subTest(mode=mode):
+                self.assertFalse(normalize_is_pairing_invariant(mode))
+                with self.assertRaisesRegex(ValueError, "run_surrogates supports"):
+                    self._null(segs, mode)
+
+    def test_density_modes_require_a_common_support(self):
+        # Q_b is only defined when one geometry describes every trial, the
+        # same precondition legacy_auto_denominator states for its own
+        # divisor.  Trials of differing length must say so rather than
+        # inventing one.
+        rng = np.random.default_rng(3)
+        starts = np.arange(8) * 3.0
+        lengths = 0.6 + 0.1 * np.arange(8)  # deliberately heterogeneous
+        epochs = np.column_stack([starts, starts + lengths])
+        spikes = [
+            np.sort(
+                np.concatenate(
+                    [
+                        t + np.sort(rng.uniform(0, ln, rng.poisson(20 * ln)))
+                        for t, ln in zip(starts, lengths)
+                    ]
+                )
+            )
+            for _ in range(4)
+        ]
+        segs = clip_spikes_to_trials(spikes, epochs, align_times=starts)
+        self.assertGreater(len(np.unique(segs.post)), 1)
+        with self.assertRaisesRegex(ValueError, "clip_to_window"):
+            self._null(segs, "normalized_covariance")
+
+
 class SurrogateDriverTest(unittest.TestCase):
     """run_surrogates against the surrogate_null it is built on."""
 

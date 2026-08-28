@@ -849,6 +849,61 @@ class MirrorPreconditionTest(unittest.TestCase):
 
 
 @needs_numba
+class TrialNormalizeModeTest(unittest.TestCase):
+    """The scaled transforms reachable through ``normalize=``."""
+
+    def _segments(self):
+        """Two units, 10 trials, enough spikes for a stable ratio."""
+        rng = np.random.default_rng(4)
+        starts = np.arange(10) * 3.0
+        epochs = np.column_stack([starts, starts + 2.0])
+        trains = [
+            np.concatenate(
+                [np.sort(rng.uniform(0, 2.0, rng.poisson(40.0))) + t for t in starts]
+            )
+            for _ in range(2)
+        ]
+        return clip_spikes_to_trials(trains, epochs, align_times=starts)
+
+    def test_each_mode_matches_its_transform(self):
+        # The string is a shortcut for the transform, not a second
+        # implementation: they must agree exactly, not merely closely.
+        segs = self._segments()
+        pairs = np.array([[0, 1]])
+        kw = {"bin_size": 0.001, "max_lag": 0.02, "pairs": pairs}
+        counts = compute_ccg_counts(segs, np.arange(10), with_expected=True, **kw)
+        for mode, fn in (
+            ("legacy_auto_normalized", legacy_auto_normalized),
+            ("normalized_covariance", normalized_covariance),
+            ("covariance_density", covariance_density),
+        ):
+            with self.subTest(mode=mode):
+                _, direct = ccg_trial_paired(
+                    segs, np.arange(10), normalize=mode, **kw
+                )
+                np.testing.assert_allclose(direct, fn(counts), rtol=0, atol=0)
+
+    def test_the_two_scales_differ_by_exactly_the_lag_exposure(self):
+        # Why normalized_covariance is a density and the legacy statistic
+        # is not: the legacy divisor carries no lag dependence at all, so
+        # the whole difference between the profiles is Q_b.
+        segs = self._segments()
+        kw = {"bin_size": 0.001, "max_lag": 0.02, "pairs": np.array([[0, 1]])}
+        counts = compute_ccg_counts(segs, np.arange(10), with_expected=True, **kw)
+        ratio = legacy_auto_normalized(counts)[0] / normalized_covariance(counts)[0]
+        scaled = ratio / counts._exposure()
+        np.testing.assert_allclose(scaled, scaled[0], rtol=1e-12)
+
+    def test_unsupported_modes_still_raise(self):
+        segs = self._segments()
+        for mode in ("rate", "conditional", "unbiased", "nonsense"):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                ccg_trial_paired(
+                    segs, np.arange(10), bin_size=0.001, max_lag=0.02,
+                    normalize=mode, pairs=np.array([[0, 1]]),
+                )
+
+
 class TransformTest(unittest.TestCase):
     """Lag-profile statistics and the integrated effect size."""
 
