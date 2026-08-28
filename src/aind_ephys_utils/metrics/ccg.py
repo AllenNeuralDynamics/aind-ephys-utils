@@ -3603,6 +3603,21 @@ def _excess_into(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
 # Hard ceiling on the sparse cross-product intermediate, ~256 MB across
 # its three float64 temporaries.  The ratio test above is what normally
 # decides, but at large N it alone would admit an enormous gather.
+#
+# Hitting this ceiling is the one case neither path handles well: the
+# gather is refused for memory, and the dense fallback then has to
+# materialise an (N, N) matrix that is itself large at the N values that
+# get here.  The right answer there is a sampled dense-dense product --
+# a numba loop accumulating sum_k n_i(k) n_j(sigma(k)) straight from the
+# (N, n_trials) counts, with no temporary beyond the (n_pairs,) output.
+# Measured at N=4000, 100 trials, 150k pairs: 10.8 ms against 24.0 ms for
+# the dense fallback, and no 122 MB (N, N) allocation.
+#
+# Deliberately not implemented.  Reaching this ceiling needs N of roughly
+# 3900 upward, and at the sizes this module actually runs -- a few hundred
+# units -- the whole cross-product is ~0.2% of a surrogate draw, so the
+# kernel would be dead code.  Written down so the measurement does not
+# have to be redone if that changes.
 _MAX_SPARSE_CELLS = 256 * 1024 * 1024 // (3 * 8)
 
 # Pairs per slice when subtracting expected counts.  2048 x B stays in
