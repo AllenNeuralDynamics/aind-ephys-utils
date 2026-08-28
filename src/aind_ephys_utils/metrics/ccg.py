@@ -3613,11 +3613,20 @@ def _excess_into(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
 # Measured at N=4000, 100 trials, 150k pairs: 10.8 ms against 24.0 ms for
 # the dense fallback, and no 122 MB (N, N) allocation.
 #
-# Deliberately not implemented.  Reaching this ceiling needs N of roughly
-# 3900 upward, and at the sizes this module actually runs -- a few hundred
-# units -- the whole cross-product is ~0.2% of a surrogate draw, so the
-# kernel would be dead code.  Written down so the measurement does not
-# have to be redone if that changes.
+# Deliberately not implemented, and the window where it would help is
+# narrower than it looks.  The two scale oppositely: the SDDMM reads from
+# the (N, n_trials) counts, which spill L2 as N grows, while the matmul
+# gives BLAS more to amortise.  Measured at N=1000, 100 trials, the dense
+# path wins at every pair count tried -- 1.26x at all-pairs, 1.80x at a
+# 500/500 region split, and still 2.56x at a 200/800 split where pairs
+# are only 0.16 of N^2.  The SDDMM won at N=4000 only because pairs were
+# 0.009 of N^2 there.
+#
+# So it earns its keep only when the pair set is *very* sparse relative
+# to N^2, which is also when the ratio test above would have picked the
+# gather had memory allowed.  At the sizes this module runs the whole
+# cross-product is ~0.2% of a surrogate draw either way.  Written down so
+# the measurement does not have to be redone.
 _MAX_SPARSE_CELLS = 256 * 1024 * 1024 // (3 * 8)
 
 # Pairs per slice when subtracting expected counts.  2048 x B stays in
