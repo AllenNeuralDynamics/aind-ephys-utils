@@ -2265,8 +2265,21 @@ def compute_ccg_counts(  # noqa: C901
             # float-promotion to enable BLAS) when n_pairs ≈ N² or
             # the sparse intermediate would exceed 256 MB.
             paired_counts = trial_counts[:, pairing]  # (N, n_trials)
-            sparse_bytes = n_pairs * paired_counts.shape[1] * 8
-            if pairs is not None and sparse_bytes < 256 * 1024 * 1024:
+            # Choose the cheaper cross-product path.  The sparse gather
+            # touches three (n_pairs, n_trials) temporaries, so its cost
+            # and memory grow with the pair count; the dense matmul is an
+            # (N, N) BLAS call whose cost barely moves with it.  Take
+            # sparse only while its intermediate is smaller than the dense
+            # one.  Erring toward dense is deliberate: choosing it a little
+            # early costs ~0.1 ms, while choosing sparse too late measured
+            # 13 ms and 71 MB per call at 31k pairs against 0.17 ms and
+            # 0.9 MB.
+            sparse_cells = n_pairs * paired_counts.shape[1]
+            if (
+                pairs is not None
+                and sparse_cells < N * N
+                and sparse_cells < _MAX_SPARSE_CELLS
+            ):
                 cross_per_pair = (
                     trial_counts[pair_arr[:, 0]].astype(np.float64)
                     * paired_counts[pair_arr[:, 1]].astype(np.float64)
@@ -2676,9 +2689,13 @@ def ccg_trial_surrogates(  # noqa: C901
                 # because BLAS amortizes per-flop better; we cast to
                 # float64 there to enable BLAS dispatch.  Threshold at
                 # 256 MB of intermediate to bound memory.
+                # See compute_ccg_counts for the rule: sparse only while
+                # its intermediate is smaller than the (N, N) dense one.
                 n_p = pair_arr.shape[0]
-                sparse_bytes = n_p * n_trials_seg * 8
-                if sparse_bytes < 256 * 1024 * 1024:
+                if (
+                    n_p * n_trials_seg < N * N
+                    and n_p * n_trials_seg < _MAX_SPARSE_CELLS
+                ):
                     # (n_p, n_trials) gather of int64 counts; promote to
                     # float64 for the multiply+sum so the result matches
                     # the existing dense-matmul return dtype.
@@ -3582,6 +3599,11 @@ def _excess_into(counts: CCGCounts, out: np.ndarray | None) -> np.ndarray:
         )
     return out
 
+
+# Hard ceiling on the sparse cross-product intermediate, ~256 MB across
+# its three float64 temporaries.  The ratio test above is what normally
+# decides, but at large N it alone would admit an enormous gather.
+_MAX_SPARSE_CELLS = 256 * 1024 * 1024 // (3 * 8)
 
 # Pairs per slice when subtracting expected counts.  2048 x B stays in
 # cache while keeping the Python loop short enough not to matter.
