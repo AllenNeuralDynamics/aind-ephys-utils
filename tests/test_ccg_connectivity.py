@@ -6,9 +6,15 @@ import numpy as np
 
 from aind_ephys_utils.metrics.ccg import (
     NN_to_pair_vec,
+    TrialShuffle,
+    ccg_trial_paired,
     clip_spikes_to_trials,
+    compute_ccg_counts,
     derangements,
+    legacy_auto_denominator,
+    legacy_auto_normalized,
     pair_vec_to_NN,
+    surrogate_null,
 )
 from aind_ephys_utils.metrics.connectivity import (
     build_shape_prefilter,
@@ -196,6 +202,152 @@ class SurrogateWorkflowTest(unittest.TestCase):
         # Cells outside the prefilter pair set are held at the fill (1.0).
         self.assertEqual(p_values[0, 3], 1.0)
         self.assertEqual(p_values[3, 0], 1.0)
+
+
+@unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
+class LegacyDenominatorTest(unittest.TestCase):
+    """The divisor run_surrogates lifts out of the surrogate loop."""
+
+    def setUp(self) -> None:
+        """Segments on a common support, plus a pair list."""
+        self.segs, _ = _make_trial_segments(np.random.default_rng(3))
+        self.pairs = np.array([[0, 1], [0, 2], [1, 3]], dtype=np.int64)
+        self.kw = dict(bin_size=0.001, max_lag=0.02, pairs=self.pairs)
+
+    def test_matches_the_transform_it_replaces(self) -> None:
+        """Dividing after the reduce equals normalizing before it."""
+        counts = compute_ccg_counts(
+            self.segs, np.arange(8), with_auto=True, **self.kw
+        )
+        normalized = legacy_auto_normalized(counts)
+        denom = legacy_auto_denominator(self.segs, self.pairs, 0.001)
+        excess = counts.counts - counts.expected_array()
+        np.testing.assert_allclose(
+            np.max(normalized, axis=-1), np.max(excess, axis=-1) / denom
+        )
+
+    def test_invariant_under_the_pairing(self) -> None:
+        """Every derangement gives the same divisor, so it can be hoisted.
+
+        This is what lets surrogate_null work in count space and still
+        produce draws comparable to a legacy-scaled observed peak.
+        """
+        denom = legacy_auto_denominator(self.segs, self.pairs, 0.001)
+        rng = np.random.default_rng(11)
+        for pairing in derangements(8, 5, rng):
+            counts = compute_ccg_counts(
+                self.segs, pairing, with_auto=True, **self.kw
+            )
+            a_i = counts.auto_direct[self.pairs[:, 0]]
+            a_j = counts.auto_paired[self.pairs[:, 1]]
+            np.testing.assert_allclose(np.sqrt(a_i * a_j), denom, rtol=1e-12)
+
+    def test_requires_a_common_support(self) -> None:
+        """Off a common support the divisor would move with the pairing."""
+        rng = np.random.default_rng(4)
+        starts = np.arange(8) * 2.0
+        stops = starts + 1.0
+        stops[0] -= 0.3  # one short trial is enough
+        spikes = [np.sort(rng.uniform(0, 16.0, 400)) for _ in range(4)]
+        ragged = clip_spikes_to_trials(
+            spikes, np.column_stack([starts, stops]), align_times=starts
+        )
+        with self.assertRaisesRegex(ValueError, "common support"):
+            legacy_auto_denominator(ragged, self.pairs, 0.001)
+
+
+@unittest.skipUnless(HAS_NUMBA, "requires the numba optional extra")
+class SurrogateDriverTest(unittest.TestCase):
+    """run_surrogates against the surrogate_null it is built on."""
+
+    def test_normalize_none_is_raw_counts(self) -> None:
+        """With no normalization the peak is the raw count peak."""
+        segs, _ = _make_trial_segments(np.random.default_rng(5))
+        pairs = np.array([[0, 1], [2, 3]], dtype=np.int64)
+        peaks = run_surrogates(
+            segs,
+            n_trials=8,
+            n_units=4,
+            n_surr=4,
+            pairs=pairs,
+            rng=np.random.default_rng(6),
+            bin_size=0.001,
+            max_lag=0.02,
+            normalize="none",
+        )
+        self.assertTrue(np.all(peaks == np.floor(peaks)))
+        self.assertTrue(np.all(peaks >= 0))
+
+    def test_agrees_with_surrogate_null(self) -> None:
+        """The driver is the count-space null, rescaled once."""
+        segs, _ = _make_trial_segments(np.random.default_rng(7))
+        pairs = np.array([[0, 1], [0, 3], [1, 2]], dtype=np.int64)
+        common = dict(bin_size=0.001, max_lag=0.02, pairs=pairs)
+        peaks = run_surrogates(
+            segs,
+            n_trials=8,
+            n_units=4,
+            n_surr=6,
+            rng=np.random.default_rng(8),
+            normalize="legacy_auto_normalized",
+            **common,
+        )
+        test = surrogate_null(
+            segs,
+            TrialShuffle(8),
+            6,
+            np.random.default_rng(8),
+            reduce=lambda v, _c: np.max(v, axis=-1),
+            **common,
+        )
+        denom = legacy_auto_denominator(segs, pairs, 0.001)
+        np.testing.assert_allclose(
+            peaks, (test.draws / denom).astype(np.float32), rtol=1e-6
+        )
+
+    def test_matches_a_per_pairing_ccg_trial_paired_loop(self) -> None:
+        """The whole driver, against the independent trial-paired path.
+
+        ccg_trial_paired normalizes each pairing itself, which is what
+        the driver no longer does; agreeing with it end to end is what
+        says hoisting the divisor out of the loop changed nothing.
+        """
+        segs, _ = _make_trial_segments(np.random.default_rng(12))
+        pairs = np.array([[0, 1], [1, 2], [0, 3]], dtype=np.int64)
+        common = dict(bin_size=0.001, max_lag=0.02, pairs=pairs)
+        peaks = run_surrogates(
+            segs,
+            n_trials=8,
+            n_units=4,
+            n_surr=5,
+            rng=np.random.default_rng(13),
+            normalize="legacy_auto_normalized",
+            **common,
+        )
+        # Same seed, same scheme, so the same five pairings.
+        reference = np.stack(
+            [
+                np.max(ccg_trial_paired(segs, p, **common)[1], axis=-1)
+                for p in TrialShuffle(8).draw(5, np.random.default_rng(13))
+            ]
+        )
+        np.testing.assert_allclose(peaks, reference, rtol=1e-6)
+
+    def test_rejects_a_session_wide_normalization(self) -> None:
+        """Modes defined against one global duration are not available."""
+        segs, _ = _make_trial_segments(np.random.default_rng(9))
+        with self.assertRaisesRegex(ValueError, "run_surrogates supports"):
+            run_surrogates(
+                segs,
+                n_trials=8,
+                n_units=4,
+                n_surr=2,
+                pairs=np.array([[0, 1]]),
+                rng=np.random.default_rng(0),
+                bin_size=0.001,
+                max_lag=0.02,
+                normalize="rate",
+            )
 
 
 if __name__ == "__main__":

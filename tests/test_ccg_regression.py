@@ -1576,6 +1576,21 @@ class SurrogateTestApiTest(unittest.TestCase):
         # Welford still works without them, over the full (pair, lag) grid.
         self.assertEqual(result.mean.shape, result.observed.shape)
 
+    def test_on_draw_sees_every_surrogate(self):
+        # The hook a long run reports progress from; it must count the
+        # draws, not the observed statistic, which is not one of them.
+        seen = []
+        surrogate_null(
+            self._fixture(0),
+            TrialShuffle(self.N_TRIALS),
+            7,
+            np.random.default_rng(0),
+            reduce=self._peak,
+            on_draw=seen.append,
+            **self.KW,
+        )
+        self.assertEqual(seen, list(range(1, 8)))
+
     def test_p_value_is_never_zero(self):
         result = self._run(self._fixture(0, coupling=0.5), n=10)
         self.assertGreater(float(result.p_value()[0]), 0.0)

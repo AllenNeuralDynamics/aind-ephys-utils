@@ -12,8 +12,9 @@ A higher-level workflow built on the cross-correlogram primitives in
   testing over the pre-filtered pair set.
 
 The surrogate functions drive the numba CCG kernel via
-``ccg_trial_surrogates``, so they require the ``numba`` optional extra at
-run time (``pip install aind-ephys-utils[numba]``).
+:func:`~aind_ephys_utils.metrics.ccg.surrogate_null`, so they require the
+``numba`` optional extra at run time
+(``pip install aind-ephys-utils[numba]``).
 """
 
 from __future__ import annotations
@@ -25,11 +26,12 @@ import numpy as np
 
 from .ccg import (
     TrialSegments,
-    ccg_trial_surrogates,
     TrialShuffle,
-    derangements,
+    _resolve_normalize,
+    legacy_auto_denominator,
     monte_carlo_pvalue,
     pair_vec_to_NN,
+    surrogate_null,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,8 +134,14 @@ def run_surrogates(
     Each surrogate re-pairs trials with a derangement (no fixed points),
     recomputes the CCG for every pair in ``pairs``, and reduces it to the
     per-pair peak (max over lag bins).  Output rows are in ``pairs`` order
-    and are ``float32`` (surrogate corrcoef peaks live in roughly
-    ``[-1, 1]``, so float32 precision is ample and halves memory).
+    and are ``float32``: the peaks are a shape statistic of order 1e-2
+    here, so float32's seven figures are ample and the retained null
+    halves.
+
+    A thin driver over :func:`~aind_ephys_utils.metrics.ccg.surrogate_null`,
+    which keeps only the draws; reach for that directly when the null mean
+    and standard deviation, an empirical p-value, or the shuffle
+    provenance are wanted as well.
 
     Parameters
     ----------
@@ -142,8 +150,8 @@ def run_surrogates(
     n_trials
         Number of trials (the derangement length).
     n_units
-        Number of units; kept for signature symmetry — the output shape
-        is per-pair, so callers project to ``(N, N)`` themselves.
+        Unused; kept for signature symmetry — the output shape is
+        per-pair, so callers project to ``(N, N)`` themselves.
     n_surr
         Number of surrogate draws.
     pairs
@@ -168,37 +176,63 @@ def run_surrogates(
     np.ndarray
         ``(n_surr, n_pairs)`` float32 surrogate peak values.
     """
-    n_pairs = pairs.shape[0]
-    peaks = np.zeros((n_surr, n_pairs), dtype=np.float32)
-    t0 = time.perf_counter()
-    for k, peak_per_pair in enumerate(
-        ccg_trial_surrogates(
-            trial_segs,
-            (
-                derangements(n_trials, n_surr, rng)
-                if shuffle is None
-                else shuffle.draw(n_surr, rng)
-            ),
-            bin_size=bin_size,
-            max_lag=max_lag,
-            normalize=normalize,
-            pairs=pairs,
-            reduce=lambda _l, C: np.max(C, axis=-1),
+    normalize = _resolve_normalize(normalize)
+    if normalize == "legacy_auto_normalized":
+        # Out of the loop, not inside it.  The divisor does not move with
+        # the pairing, so the draws stay on one scale and the observed
+        # peak the caller passes to run_two_stage_mc stays comparable to
+        # them; see legacy_auto_denominator.
+        denom = legacy_auto_denominator(trial_segs, pairs, bin_size)
+        subtract_expected = True
+    elif normalize == "none":
+        denom = None
+        subtract_expected = False
+    else:
+        raise ValueError(
+            f"run_surrogates supports 'legacy_auto_normalized' and 'none', "
+            f"got {normalize!r}."
         )
-    ):
-        peaks[k] = peak_per_pair
-        if (k + 1) % 50 == 0:
-            elapsed = time.perf_counter() - t0
-            rate = (k + 1) / elapsed
-            eta = (n_surr - k - 1) / rate
-            logger.info(
-                "  %s%d/%d (%.1f/s, ETA %.0fs)",
-                label,
-                k + 1,
-                n_surr,
-                rate,
-                eta,
-            )
+
+    def peak(values: np.ndarray, _counts: object) -> np.ndarray:
+        """Per-pair peak, on the requested scale, in float32.
+
+        Reducing to float32 here rather than on the stacked result keeps
+        the retained null at half the width it would otherwise be, which
+        is the array that grows with both the pair count and n_surr.
+        """
+        out = np.max(values, axis=-1)
+        if denom is not None:
+            out = out / denom
+        return out.astype(np.float32)
+
+    t0 = time.perf_counter()
+
+    def report(k: int) -> None:
+        """Log rate and ETA every 50 draws."""
+        if k % 50:
+            return
+        rate = k / (time.perf_counter() - t0)
+        logger.info(
+            "  %s%d/%d (%.1f/s, ETA %.0fs)",
+            label,
+            k,
+            n_surr,
+            rate,
+            (n_surr - k) / rate,
+        )
+
+    test = surrogate_null(
+        trial_segs,
+        shuffle if shuffle is not None else TrialShuffle(n_trials),
+        n_surr,
+        rng,
+        subtract_expected=subtract_expected,
+        reduce=peak,
+        on_draw=report,
+        bin_size=bin_size,
+        max_lag=max_lag,
+        pairs=pairs,
+    )
     elapsed = time.perf_counter() - t0
     logger.info(
         "%s%d surrogates in %.1fs (%.2fs each)",
@@ -207,7 +241,8 @@ def run_surrogates(
         elapsed,
         elapsed / max(n_surr, 1),
     )
-    return peaks
+    assert test.draws is not None  # a reduce was supplied
+    return test.draws
 
 
 # ---------------------------------------------------------------------------

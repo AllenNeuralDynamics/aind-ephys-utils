@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Union
 
 import numpy as np
@@ -1941,6 +1940,51 @@ def legacy_auto_normalized(
     return res
 
 
+def legacy_auto_denominator(
+    trial_segments: TrialSegments,
+    pairs: np.ndarray,
+    bin_size: float,
+) -> np.ndarray:
+    """Per-pair ``sqrt(A_i A_j)``, the legacy statistic's divisor.
+
+    Constant across trial pairings, so surrogate work can take it out of
+    the loop: a pairing that is not the identity has to leave every trial
+    on a common support (see :func:`_validate_pairing_support`), and on a
+    common support each auto term reads only its own unit's spikes.
+
+    That invariance is also what makes the draws comparable at all.  A
+    divisor that did move with the pairing would put every draw on its own
+    scale, and :func:`surrogate_null` accordingly works in count space;
+    apply this afterwards to land back on the legacy scale.
+
+    ``NaN`` where the product is non-positive, matching
+    :func:`legacy_auto_normalized`.
+    """
+    ts = trial_segments
+    if not _uniform_support(ts):
+        raise ValueError(
+            "the legacy divisor is only pairing-invariant on a common "
+            "support; call clip_to_window first."
+        )
+    n_units = len(ts.segments)
+    n_trials = len(ts.durations)
+    per_trial = np.zeros((n_units, n_trials), dtype=np.float64)
+    _auto_terms_clipped(
+        ts.all_spikes,
+        ts.offsets,
+        ts.counts,
+        np.full(n_trials, -ts.pre[0], dtype=np.float64),
+        np.full(n_trials, ts.post[0], dtype=np.float64),
+        bin_size,
+        per_trial,
+    )
+    auto = per_trial.sum(axis=1)
+    pairs = np.asarray(pairs, dtype=np.int64)
+    product = auto[pairs[:, 0]] * auto[pairs[:, 1]]
+    with np.errstate(invalid="ignore"):
+        return np.where(product > 0, np.sqrt(product), np.nan)
+
+
 def _window_weights(
     lags: np.ndarray, bin_size: float, window: tuple[float, float] | None
 ) -> np.ndarray | None:
@@ -2485,349 +2529,6 @@ def ccg_trial_paired(  # noqa: C901
     # the upper triangle, so the only uncovered cells are the diagonal when
     # ``include_autocorr`` is False.
     return lags, to_dense(C, result, fill=0.0)
-
-
-def ccg_trial_surrogates(  # noqa: C901
-    trial_segments: TrialSegments,
-    pairings: Iterable[np.ndarray],
-    *,
-    bin_size: float = 0.001,
-    max_lag: float = 0.1,
-    normalize: str = "legacy_auto_normalized",
-    exclude_zero_lag_autocorr: bool = True,
-    include_autocorr: bool = True,
-    pairs: np.ndarray | None = None,
-    reduce: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
-) -> Iterator[np.ndarray]:
-    """Compute trial-paired CCGs for many pairings with double-buffered pipeline.
-
-    Overlaps the numba kernel (worker thread) with Python
-    scatter/normalization (main thread) for ~30% throughput improvement
-    over sequential :func:`ccg_trial_paired` calls.
-
-    Parameters
-    ----------
-    trial_segments
-        Output of :func:`clip_spikes_to_trials`.
-    pairings
-        Iterable of ``(n_trials,)`` integer pairing arrays.
-    bin_size
-        Histogram bin width (seconds).
-    max_lag
-        Maximum lag (seconds).
-    normalize
-        Normalization mode.
-    exclude_zero_lag_autocorr
-        Zero the central bin for autocorrelograms.
-    include_autocorr
-        Compute autocorrelograms on the diagonal.
-    reduce
-        Optional reduction ``(lags, C) -> result``.  Applied during
-        scatter so the full CCG is never returned.
-
-    Yields
-    ------
-    np.ndarray
-        The reduced result if *reduce* is provided, otherwise the
-        per-pair CCG.
-
-        When ``pairs`` is ``None``: the un-reduced CCG is shape
-        ``(N, N, B)`` with the cross/auto symmetric structure, and
-        ``reduce`` is called with that shape.
-
-        When ``pairs`` is provided: the un-reduced CCG is shape
-        ``(n_pairs, B)``, with row ``p`` corresponding to the input
-        pair ``pairs[p]``.  ``reduce`` is called with this per-pair
-        layout — much cheaper for ``np.max(C, axis=-1)``-style
-        reductions when ``n_pairs ≪ N²``.  The lower triangle is not
-        mirrored; reverse ``C[p, :]`` to obtain the ``(j, i)`` CCG
-        from a ``(i, j)`` row.
-    """
-    normalize = _resolve_normalize(normalize)
-    _validate_binning(bin_size, max_lag)
-    _validate_trial_normalize(normalize)
-    ts = trial_segments
-    N = len(ts.segments)
-    half = int(round(max_lag / bin_size))
-    B = 2 * half + 1
-    lags = (np.arange(-half, half + 1) * bin_size).astype(np.float64)
-    skip_clipping = _uniform_support(ts)
-    use_corrcoef = normalize == "legacy_auto_normalized"
-
-    n_trials_seg = len(ts.durations)
-    bufs_a = _CCGBuffers.for_segments(
-        ts,
-        bin_size,
-        max_lag,
-        include_autocorr,
-        pairs=pairs,
-        need_auto=use_corrcoef,
-    )
-    bufs_b = _CCGBuffers.for_segments(
-        ts,
-        bin_size,
-        max_lag,
-        include_autocorr,
-        pairs=pairs,
-        need_auto=use_corrcoef,
-    )
-
-    # --- Fast path for uniform durations ---
-    # When all trials have equal duration (after clip_to_window), overlap
-    # bounds and auto terms are identical across all pairings.  Precompute
-    # once to avoid redundant work per surrogate.
-    #
-    # Correctness:
-    #   ol/orr: max(-pre[k], -pre[σ(k)]) = -pre[0] when all pre equal.
-    #   auto terms: depend only on (unit, trial, ol, orr) — no pairing.
-    #   auto_sum: sum is permutation-invariant → same for direct & paired.
-    #
-    # With the out_dur fix (duration accumulates even for silent trials),
-    # total_dur is now truly constant across pairs when durations are
-    # uniform: total_dur = n_trials × (pre + post).  This means ec_buf
-    # can also be precomputed.
-    uniform_fast = skip_clipping and use_corrcoef
-    if skip_clipping:
-        uniform_ol = np.full(n_trials_seg, -ts.pre[0], dtype=np.float64)
-        uniform_orr = np.full(n_trials_seg, ts.post[0], dtype=np.float64)
-    if uniform_fast:
-        # Auto terms: compute once
-        auto_precomputed = np.zeros((N, n_trials_seg), dtype=np.float64)
-        _auto_terms_clipped(
-            ts.all_spikes,
-            ts.offsets,
-            ts.counts,
-            uniform_ol,
-            uniform_orr,
-            bin_size,
-            auto_precomputed,
-        )
-        # Sum is the same for direct and paired (permutation-invariant)
-        uniform_auto_sum: np.ndarray = auto_precomputed.sum(axis=1)
-
-        # Per-trial expected-count shape: ec_shape(d) is constant when
-        # all trials have equal duration d.  The scatter loop multiplies
-        # this by sum_k n_i(k)*n_j(σ(k)) per pair.
-        uniform_d = float(ts.post[0] + ts.pre[0])
-        uniform_ec: np.ndarray = _expected_counts_shape(B, bin_size, uniform_d)
-
-    def _launch_kernel(
-        bufs: _CCGBuffers,
-        pairing: np.ndarray,
-        ol: np.ndarray,
-        orr: np.ndarray,
-    ) -> None:
-        """Zero buffers and run the numba kernel for one pairing."""
-        bufs.zero()
-        _ccg_all_pairs_trials(
-            ts.all_spikes,
-            ts.offsets,
-            ts.counts,
-            ol,
-            orr,
-            bufs.pair_arr,
-            pairing,
-            bin_size,
-            B,
-            bufs.out_hist,
-            bufs.out_dur,
-            skip_clipping,
-        )
-        if use_corrcoef and not uniform_fast:
-            bufs.auto_per_trial[:] = 0
-            _auto_terms_clipped(
-                ts.all_spikes,
-                ts.offsets,
-                ts.counts,
-                ol,
-                orr,
-                bin_size,
-                bufs.auto_per_trial,
-            )
-
-    def _scatter(  # noqa: C901
-        bufs: _CCGBuffers,
-        pairing: np.ndarray,
-        ol: np.ndarray,
-        orr: np.ndarray,
-    ) -> np.ndarray:
-        """Normalize kernel output into per-pair peak values."""
-        pair_arr = bufs.pair_arr
-        assert pair_arr is not None
-        n_pairs = pair_arr.shape[0]
-
-        if use_corrcoef:
-            if uniform_fast:
-                auto_sum_i = uniform_auto_sum
-                auto_sum_j = uniform_auto_sum
-            else:
-                overlap_valid = (orr - ol) > 0
-                auto_masked = (
-                    bufs.auto_per_trial * overlap_valid[np.newaxis, :]
-                )
-                auto_sum_i = auto_masked.sum(axis=1)
-                auto_sum_j = auto_masked[:, pairing].sum(axis=1)
-
-        trial_counts = ts.counts
-        overlap_durs = orr - ol
-        paired_counts = trial_counts[:, pairing]  # (N, n_trials)
-
-        if use_corrcoef:
-            if uniform_fast:
-                # We need ``cross_matrix[i, j] = sum_k trial_counts[i, k] *
-                # paired_counts[j, k]`` only for ``(i, j) ∈ pair_arr`` —
-                # not the full N×N grid.  The original code computed the
-                # full matmul, which is unnecessary work and, on int64
-                # arrays, falls back to a non-BLAS generic loop that's
-                # ~4x slower than the float64 BLAS path.  When pair_arr
-                # is much smaller than N² (typical for surrogate testing
-                # with a pre-filter or candidate set), gather + multiply
-                # + sum on just the relevant rows is dramatically
-                # cheaper than the full matmul.
-                #
-                # For large pair_arr (≈ N²) the dense path is faster
-                # because BLAS amortizes per-flop better; we cast to
-                # float64 there to enable BLAS dispatch.  Threshold at
-                # 256 MB of intermediate to bound memory.
-                # See compute_ccg_counts for the rule: sparse only while
-                # its intermediate is smaller than the (N, N) dense one.
-                n_p = pair_arr.shape[0]
-                if (
-                    n_p * n_trials_seg < N * N
-                    and n_p * n_trials_seg < _MAX_SPARSE_CELLS
-                ):
-                    # (n_p, n_trials) gather of int64 counts; promote to
-                    # float64 for the multiply+sum so the result matches
-                    # the existing dense-matmul return dtype.
-                    cross_per_pair = (
-                        trial_counts[pair_arr[:, 0]].astype(np.float64)
-                        * paired_counts[pair_arr[:, 1]].astype(np.float64)
-                    ).sum(axis=1)
-                else:
-                    # Dense matmul, float-promoted for BLAS.
-                    cm_full = (
-                        trial_counts.astype(np.float64)
-                        @ paired_counts.astype(np.float64).T
-                    )
-                    cross_per_pair = cm_full[pair_arr[:, 0], pair_arr[:, 1]]
-            else:
-                # Non-uniform: one shape per distinct overlap duration.
-                n_tr = trial_counts.shape[1]
-                valid = overlap_durs > 0
-                ec_weighted = np.zeros((n_tr, B), dtype=np.float64)
-                uniq_d, inverse = np.unique(
-                    overlap_durs[valid], return_inverse=True
-                )
-                if uniq_d.size:
-                    shapes = np.stack(
-                        [
-                            _expected_counts_shape(B, bin_size, float(d))
-                            for d in uniq_d
-                        ]
-                    )
-                    ec_weighted[valid, :] = shapes[inverse]
-
-        # When ``pairs`` is explicit (the caller passed a specific pair
-        # list), construct only an ``(n_pairs, B)`` output instead of
-        # the full ``(N, N, B)`` matrix.  The reduce callback then
-        # operates on a per-pair-row array, which for surrogate testing
-        # is a massive saving — e.g. for N=499, n_pairs=1730, the
-        # ``np.max(C, axis=-1)`` reduce drops from ~41 ms (250k cells)
-        # to <1 ms (1730 cells).  Caller is responsible for indexing
-        # the result by pair index.
-        #
-        # When ``pairs`` is ``None`` (default), preserve the original
-        # ``(N, N, B)`` behaviour with the auto/cross mirror so the
-        # public API is unchanged for that path.
-        C = np.zeros((n_pairs, B), dtype=np.float64)
-        for p in range(n_pairs):
-            i, j = pair_arr[p, 0], pair_arr[p, 1]
-            total_dur = bufs.out_dur[p]
-            if total_dur <= 0:
-                continue
-            h = bufs.out_hist[p, :].astype(np.float64)
-            if use_corrcoef:
-                if uniform_fast:
-                    h -= uniform_ec * cross_per_pair[p]
-                else:
-                    cross_per_trial = trial_counts[i, :] * paired_counts[j, :]
-                    h -= ec_weighted.T @ cross_per_trial
-                product = auto_sum_i[i] * auto_sum_j[j]
-                # See legacy_auto_normalized: undefined, not |value|.
-                if product > 0:
-                    h /= np.sqrt(product)
-                else:
-                    h = np.full_like(h, np.nan)
-            if i == j and exclude_zero_lag_autocorr:
-                h[half] = 0.0
-            C[p, :] = h
-
-        if pairs is None:
-            C = to_dense(
-                C,
-                CCGCounts(
-                    counts=C,
-                    lags=lags,
-                    pairs=pair_arr,
-                    n_units=N,
-                    bin_size=bin_size,
-                    pairing=pairing,
-                ),
-                fill=0.0,
-            )
-
-        return reduce(lags, C) if reduce is not None else C
-
-    # Pipeline — overlap bounds are constant when durations are uniform
-    def _overlap_for(pairing: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return per-pair overlap bounds for a trial pairing."""
-        _validate_pairing_support(ts, pairing)
-        if skip_clipping:
-            return uniform_ol, uniform_orr
-        return (
-            np.maximum(-ts.pre, -ts.pre[pairing]),
-            np.minimum(ts.post, ts.post[pairing]),
-        )
-
-    pairing_iter = iter(pairings)
-    executor = ThreadPoolExecutor(max_workers=1)
-    try:
-        first_pairing = np.asarray(next(pairing_iter), dtype=np.int64)
-        ol, orr = _overlap_for(first_pairing)
-        future = executor.submit(
-            _launch_kernel, bufs_a, first_pairing, ol, orr
-        )
-        future.result()
-
-        prev_bufs = bufs_a
-        prev_pairing = first_pairing
-        prev_ol, prev_orr = ol, orr
-
-        for next_pairing in pairing_iter:
-            next_pairing = np.asarray(next_pairing, dtype=np.int64)
-            next_ol, next_orr = _overlap_for(next_pairing)
-            next_bufs = bufs_b if prev_bufs is bufs_a else bufs_a
-
-            future = executor.submit(
-                _launch_kernel,
-                next_bufs,
-                next_pairing,
-                next_ol,
-                next_orr,
-            )
-            yield _scatter(prev_bufs, prev_pairing, prev_ol, prev_orr)
-            future.result()
-
-            prev_bufs = next_bufs
-            prev_pairing = next_pairing
-            prev_ol, prev_orr = next_ol, next_orr
-
-        yield _scatter(prev_bufs, prev_pairing, prev_ol, prev_orr)
-
-    except StopIteration:
-        pass
-    finally:
-        executor.shutdown(wait=False)
 
 
 # ---------------------------------------------------------------------------
@@ -3459,7 +3160,7 @@ class SurrogateTest:
         return (at_least + 1.0) / (self.n_surrogates + 1.0)
 
 
-def surrogate_null(
+def surrogate_null(  # noqa: C901
     trial_segments: TrialSegments,
     shuffle: TrialShuffle,
     n_surrogates: int,
@@ -3467,6 +3168,7 @@ def surrogate_null(
     *,
     subtract_expected: bool = True,
     reduce: Callable[[np.ndarray, CCGCounts], np.ndarray] | None = None,
+    on_draw: Callable[[int], None] | None = None,
     **kwargs: Any,
 ) -> SurrogateTest:
     """Compare an observed CCG against a trial-permutation null.
@@ -3500,6 +3202,9 @@ def surrogate_null(
         each draw, e.g. a peak over a lag window.  Enables
         :meth:`SurrogateTest.p_value` and shrinks the null to per-pair
         scalars.
+    on_draw
+        Called with the number of draws completed, after each one.  For
+        progress reporting on runs long enough to need it.
     **kwargs
         Passed to :func:`compute_ccg_counts` (``bin_size``, ``max_lag``,
         ``pairs``, ``include_autocorr``).
@@ -3556,11 +3261,13 @@ def surrogate_null(
     observed = np.array(observed, copy=True)
     acc = _Welford(observed.shape)
     kept: list[np.ndarray] | None = [] if reduce is not None else None
-    for pairing in shuffle.draw(n_surrogates, rng):
+    for k, pairing in enumerate(shuffle.draw(n_surrogates, rng), start=1):
         values, _ = statistic(pairing)
         acc.update(values)
         if kept is not None:
             kept.append(values)
+        if on_draw is not None:
+            on_draw(k)
 
     provenance = shuffle.provenance()
     provenance["n_surrogates"] = n_surrogates
@@ -3801,8 +3508,8 @@ def derangements(
     A derangement of ``range(n)`` maps no index to itself, so using one
     to re-pair trials destroys cross-unit correlations while preserving
     each unit's within-trial structure — the basis for trial-identity
-    surrogate testing (feed the yielded permutations to
-    :func:`ccg_trial_surrogates`).
+    surrogate testing.  :class:`TrialShuffle` wraps this as the
+    ``"global"`` scheme, which is what :func:`surrogate_null` consumes.
 
     Parameters
     ----------
